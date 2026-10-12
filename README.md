@@ -2,6 +2,8 @@
 
 A native macOS application written in SwiftUI that compares the time taken to calculate the **first N prime numbers** in 35 programming languages. Requires macOS 14 or later. Benchmarks run locally in independent processes.
 
+Download the **Developer ID signed and Apple-notarized** Apple Silicon app from [GitHub Releases](https://github.com/damianrickard/PrimeSieve/releases/latest). Extract the ZIP and drag PrimeSieve into Applications. macOS may still show its normal first-open confirmation for an internet download.
+
 ## Build and launch
 
 ```sh
@@ -10,6 +12,10 @@ open dist/PrimeSieve.app
 ```
 
 The script produces a locally signed application. Distribution signing and notarization are separate release tasks. Full Xcode is recommended for running the XCTest suite; Command Line Tools can build the app using the native SwiftPM build system.
+
+For public distribution, set `SIGNING_IDENTITY` to an installed **Developer ID Application** identity when running `scripts/build-app.sh`. This enables hardened runtime and secure timestamping. Each build assembles a fresh app bundle and verifies its signature before replacing `dist/PrimeSieve.app`; a failed build preserves the previous app.
+
+Configure notarization credentials locally with `xcrun notarytool store-credentials` and keep credentials out of the repository. Then run `./scripts/notarize-app.sh KEYCHAIN_PROFILE`, using the profile name you saved. The script submits a copy, requires Apple's Accepted status, staples and validates the ticket, and checks Gatekeeper before producing a ZIP and SHA-256 checksum in the reported `dist/notarization.*` folder. Publish that ZIP, rather than the unstapled input app. If submission times out, inspect the saved submission ID and query it with `notarytool info` or `notarytool wait` before submitting again; the service may still be processing it.
 
 ```sh
 DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test --build-system native
