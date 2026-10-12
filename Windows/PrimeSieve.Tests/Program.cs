@@ -32,6 +32,47 @@ try
         Check(PrimeReference.Calculate(count, new BenchmarkConfiguration(count).SieveLimit) == new PrimeSignature(count, last, sum), "independent reference " + count);
     foreach (var config in new[] { new BenchmarkConfiguration(0), new BenchmarkConfiguration(10_000_001), new BenchmarkConfiguration(Repetitions: 0), new BenchmarkConfiguration(Repetitions: 31), new BenchmarkConfiguration(Warmups: -1), new BenchmarkConfiguration(Warmups: 21), new BenchmarkConfiguration(TimeoutSeconds: double.NaN), new BenchmarkConfiguration(TimeoutSeconds: double.PositiveInfinity), new BenchmarkConfiguration(Mode: (TimingMode)99) })
         Throws(config.Validate, "configuration boundary");
+    Check(SieveImplementation.All.Length == 43 && SieveImplementation.All.Select(i => i.Id).Distinct().Count() == 43, "unique implementation registry");
+    Check(ReferenceEquals(SieveImplementation.All, SieveImplementation.All) && SieveImplementation.RegistryError == null, "registry is cached");
+    SieveImplementation.ValidateRegistry();
+    var registryFixture = Path.Combine(root, "implementations.json");
+    void CheckInvalidRegistry()
+    {
+        var loaded = SieveImplementation.LoadRegistry(registryFixture);
+        Check(loaded.Error?.StartsWith("Unable to load implementation registry") == true && loaded.Implementations.Length == 35 && loaded.Implementations.All(i => i.IsBaseline), "damaged registry reports error and preserves baselines");
+    }
+    CheckInvalidRegistry();
+    var variant = SieveImplementation.All.First(i => !i.IsBaseline);
+    foreach (var text in new[] { "{broken", "null", "[]", "[null]", "[{}]",
+        JsonSerializer.Serialize(new[] {variant, variant},JsonDefaults.Options),
+        JsonSerializer.Serialize(new[] {variant with {LanguageID = "unknown"}},JsonDefaults.Options),
+        JsonSerializer.Serialize(new[] {variant with {ProtocolVersion = 1}},JsonDefaults.Options) })
+    { File.WriteAllText(registryFixture, text); CheckInvalidRegistry(); }
+    File.WriteAllText(registryFixture, JsonSerializer.Serialize(new[] {variant},JsonDefaults.Options));
+    Check(SieveImplementation.LoadRegistry(registryFixture) is { Error:null, Implementations.Length:36 }, "valid registry loads alongside baselines");
+    foreach (var item in SieveImplementation.All.Where(i => !i.IsBaseline)) Check(WorkerSources.Sections(item).Length > 0 && item.Files().All(f => File.Exists(WorkerSources.PathFor(f))), "variant sources " + item.Id);
+    foreach (var limit in new[] {2,3,4,8,9,24,25,26,48,49,50,63,64,65,127,128,129,1024})
+    {
+        var expected = PrimeReference.Sequence(int.MaxValue, limit);
+        Check(PrimeReference.Calculate(new(Workload:Workload.UpperLimit,UpperLimit:limit)) == new PrimeSignature(expected.Length,expected[^1],expected.Sum(x => (long)x)), "inclusive limit " + limit);
+    }
+    Throws(() => new BenchmarkConfiguration(Mode:TimingMode.Throughput).Validate(), "throughput requires limit workload");
+    Throws(() => new BenchmarkConfiguration(Rounds:0).Validate(), "round count boundary");
+    new BenchmarkConfiguration(PrimeCount:100,UpperLimit:0).Validate();
+    new BenchmarkConfiguration(PrimeCount:0,Workload:Workload.UpperLimit,UpperLimit:1024).Validate();
+    Check(true, "inactive workload values do not block validation");
+    Throws(() => new BenchmarkConfiguration(Workload:Workload.UpperLimit,UpperLimit:0).Validate(), "active upper limit remains validated");
+    var tightBudget = new BenchmarkConfiguration(Repetitions:23,Warmups:3,TimeoutSeconds:120,Mode:TimingMode.Throughput,Workload:Workload.UpperLimit,UpperLimit:200_000_000,DurationSeconds:5);
+    tightBudget.Validate();
+    Check(tightBudget.TimeoutSeconds == 120 && tightBudget.SuggestedThroughputTimeout == 230, "timeout guidance preserves user budget");
+    Check(new[] { "startup", "warm-ups", "final-pass overrun", "verification", "output", "not a completion guarantee" }.All(term => tightBudget.TimeoutGuidance!.Contains(term)), "timeout guidance describes overhead and uncertainty");
+    Throws(() => (tightBudget with { TimeoutSeconds = 115 }).Validate(), "timeout must exceed window total");
+    Check(new BenchmarkConfiguration(Repetitions:1).SuggestedThroughputTimeout == 30 && new BenchmarkConfiguration().TimeoutGuidance == null, "timeout suggestion floor and timing mode");
+    Check(Statistics.Iqr([1,2,3,4]) == 1.5 && new MeasurementWindow(10,5e9,2).PassesPerSecondPerThread == 1, "IQR and per-thread rates");
+    const string window = """{"elapsed_ns":20000000,"count":2,"last_prime":3,"checksum":5,"passes":20,"primes":[2,3]}""";
+    Check(BenchmarkRunner.Decode(window,1,new(2,3,5),[2,3],0.02).Length == 1, "verified duration window");
+    foreach (var invalid in new[] { window.Replace("20000000","1000"),window.Replace("\"passes\":20","\"passes\":0"),window.Replace("[2,3]","[1,4]") })
+        Throws(() => BenchmarkRunner.Decode(invalid,1,new(2,3,5),[2,3],0.02), "bad window rejected");
     var signature = new PrimeSignature(1, 2, 2);
     const string good = "{\"elapsed_ns\":1.5,\"count\":1,\"last_prime\":2,\"checksum\":2}";
     Check(BenchmarkRunner.Decode("runtime banner\n" + good, 1, signature)[0].ElapsedNS == 1.5, "decode banner and valid sample");
@@ -51,6 +92,13 @@ try
     var store = new SessionStore(Path.Combine(root, "store"));
     var session = new BenchmarkSession { Configuration = new(1), Completed = true }; session.Results.Add(result);
     store.Save(session); Check(store.Load().Sessions.Single().Results[0].MeanNS == 4.5, "history round-trip");
+    var historyPath = Path.Combine(store.Root,"Sessions",session.Id + ".json");
+    var historyDocument = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(historyPath))!;
+    historyDocument["configuration"]!.AsObject().Remove("contractVersion"); File.WriteAllText(historyPath,historyDocument.ToJsonString());
+    Check(store.Load().Sessions.Single().Configuration.ContractVersion == 1, "legacy history retains contract v1");
+    historyDocument["results"]![0]!.AsObject().Remove("signature"); File.WriteAllText(historyPath,historyDocument.ToJsonString());
+    Check(store.Load().Errors.Count == 1, "missing signature skipped safely"); store.Save(session);
+
     File.WriteAllText(Path.Combine(store.Root, "Sessions", Guid.NewGuid() + ".json"), "invalid");
     Check(store.Load().Errors.Count == 1 && store.Load().Sessions.Count == 1, "corrupt history isolated");
     File.WriteAllText(Path.Combine(store.Root, "Sessions", "keep.json"), "not a session");
@@ -70,6 +118,34 @@ try
     File.Delete(settings); Directory.CreateDirectory(settings);
     Check(store.LoadRuntimePreferences().Warnings.Count == 1, "unreadable settings recover"); Directory.Delete(settings);
     Check(RuntimeDiscovery.Find(["dotnet"], new Dictionary<string, string> { ["csharp"] = null! }, "csharp") == null, "null override cannot abort discovery");
+    var python = (await RuntimeDiscovery.DiscoverAsync()).Where(s => s.Available && s.Language.Id == "python").ToArray();
+    if (python.Length > 0) foreach (var mode in new[] { TimingMode.Calculation, TimingMode.Startup, TimingMode.Throughput })
+    {
+        var comparison = await BenchmarkRunner.RunAsync(python, new(129,2,1, Mode:mode, Workload:Workload.UpperLimit,UpperLimit:129,DurationSeconds:0.02,Rounds:2,Implementations:ImplementationSelection.Candidates,ContractVersion:1));
+        Check(comparison.Failures.Count == 0 && comparison.Results.Count == 1 && comparison.Results[0].SamplesNS.Length == 4 && comparison.Configuration.ContractVersion == 3, "variant integration " + mode);
+        Check(comparison.ExecutionOrder.Count == 2 && comparison.Results[0].RoundOrders!.SequenceEqual(new[] {1,2}), "round metadata " + mode);
+        Check(comparison.Results[0].IsThroughput == (mode == TimingMode.Throughput), "score mode " + mode);
+        Check(comparison.Results[0].LaunchCommand.Last() == (mode == TimingMode.Startup ? "0" : "1"), "startup samples exclude full-sequence output " + mode);
+    }
+    if (python.Length > 0) foreach (var interruptedRound in new[] {1,2})
+    {
+        using var cancel = new CancellationTokenSource();
+        var snapshots = new List<BenchmarkResult[]>();
+        var progress = new InlineProgress(update => {
+            if (update.CompletedRoundResults is {} complete) snapshots.Add(complete);
+            if (update.Result?.RoundOrders?.Last() == interruptedRound) cancel.Cancel();
+        });
+        var partial = await BenchmarkRunner.RunAsync(python, new(Repetitions:2,Warmups:0,Workload:Workload.UpperLimit,UpperLimit:129,Rounds:3,Implementations:ImplementationSelection.All),progress:progress,cancellationToken:cancel.Token);
+        Check(partial.Cancelled && !partial.Completed && snapshots.Count == interruptedRound-1, "cancellation only publishes complete rounds " + interruptedRound);
+        Check(partial.Results.Count == (interruptedRound == 1 ? 0 : 2) && partial.Results.All(r => r.RoundOrders!.SequenceEqual(new[] {1}) && r.SamplesNS.Length == 2), "partial-round samples rolled back " + interruptedRound);
+        var partialStore = new SessionStore(Path.Combine(root,"cancel-round-"+interruptedRound)); partialStore.Save(partial);
+        Check(partialStore.Load().Sessions.Single().Results.All(r => r.RoundOrders!.SequenceEqual(new[] {1}) && r.SamplesNS.Length == 2), "cancelled round snapshot persists " + interruptedRound);
+    }
+    if (python.Length > 0)
+    {
+        var largeSequence = await BenchmarkRunner.RunAsync(python, new(Repetitions:30,Warmups:0,Workload:Workload.UpperLimit,UpperLimit:100000,Implementations:ImplementationSelection.Candidates));
+        Check(largeSequence.Failures.Count == 0 && largeSequence.Results.Single().SamplesNS.Length == 30, "full-sequence output fits at maximum repetition count");
+    }
     var suffix = OperatingSystem.IsWindows() ? ".exe" : "";
     var jdk = Path.Combine(root, "actual jdk"); var bin = Path.Combine(jdk, "bin"); Directory.CreateDirectory(bin);
     File.WriteAllText(Path.Combine(bin, "java" + suffix), "fixture"); File.WriteAllText(Path.Combine(bin, "javac" + suffix), "fixture");
@@ -189,9 +265,9 @@ try
         using var cancel = new CancellationTokenSource();
         var progress = new InlineProgress(update => { if (update.Result != null) cancel.Cancel(); });
         var partial = await BenchmarkRunner.RunAsync(statuses, new(1000, 1, 0), progress: progress, cancellationToken: cancel.Token);
-        Check(partial.Cancelled && !partial.Completed && partial.Results.Count == 1, "mid-comparison cancellation preserves completed result");
+        Check(partial.Cancelled && !partial.Completed && partial.Results.Count == 0, "first-round cancellation excludes incomplete comparison");
         store.Save(partial);
-        Check(store.Load().Sessions.Single().Cancelled && store.Load().Sessions.Single().Results.Count == 1, "cancelled result persists in history");
+        Check(store.Load().Sessions.Single().Cancelled && store.Load().Sessions.Single().Results.Count == 0, "cancelled session persists without partial-round ranks");
     }
     Console.WriteLine($"All {passed} regression checks passed."); return 0;
 }

@@ -1,6 +1,6 @@
 # PrimeSieve
 
-A native macOS application written in SwiftUI that compares the time taken to calculate the **first N prime numbers** in 35 programming languages. Requires macOS 14 or later. Benchmarks run locally in independent processes.
+A native macOS application written in SwiftUI that compares verified prime-sieve implementations in **35 programming languages**, with first-N and inclusive upper-limit workloads. Requires macOS 14 or later. Benchmarks run locally in independent processes.
 
 Download the **Developer ID signed and Apple-notarized** Apple Silicon app from [GitHub Releases](https://github.com/damianrickard/PrimeSieve/releases/latest). Extract the ZIP and drag PrimeSieve into Applications. macOS may still show its normal first-open confirmation for an internet download.
 
@@ -35,11 +35,11 @@ swift build --build-system native --product primesieve-cli
 ## Using the application
 
 1. Select installed languages in the sidebar. **All ready** selects every detected runtime.
-2. Enter the number of primes, or select a preset.
-3. Choose **Calculation** or **Startup + calculation** and select **1–30 iterations** per language in the main panel. Advanced settings control warm-ups and the worker timeout.
-4. Start the comparison. Verified results appear in ascending median-time order as workers finish. Cancellation keeps completed results.
+2. Choose **First N primes** or **Primes up to limit**, and enter the count or inclusive upper limit.
+3. Choose **Calculation**, **Startup + calculation**, or **Sieve throughput**. Select baselines, tuned variants, or both. Advanced settings control warm-ups, randomized rounds, window duration and timeout. **Drag Race preset** selects the five supported languages, an inclusive limit of 1,000,000, and three five-second windows.
+4. Start the comparison. Latency ranks lower median times; throughput ranks higher median passes/second. Storage filters separate byte and packed-bit variants. Rankings update after each complete round. Cancellation keeps the last complete round's accumulated samples and discards the unfinished round; cancellation in round one leaves no ranked results.
 5. Open a language's result for its iteration count, mean, median, individual measurements, and compiler settings. Export CSV or JSON, or reopen a saved comparison from History.
-6. Open **Code explorer** to browse the documented prime-calculation sections for all 35 languages. The explorer reads excerpts directly from the bundled worker sources and hides timing, command-line parsing, checksum verification, and output. It works without installing a runtime. Assembly includes both ARM64 and x86-64 kernels. Result details also open the explorer at the selected language.
+6. Open **Code explorer** to browse the documented prime-calculation sections for all 35 baselines and eight named variants. The explorer reads excerpts directly from the bundled worker sources and hides timing, command-line parsing, checksum verification, and output. It works without installing a runtime. Assembly includes both ARM64 and x86-64 kernels. Result details also open the explorer at the selected language.
 7. Choose **History → Clear History…** to delete saved comparisons after confirmation. Results currently on screen and exported files are kept. Clearing is disabled during a comparison and when history is empty.
 
 Each worker documents allocation, composite marking, and scanning to the Nth prime. Horizontal scrolling preserves code indentation; text size and Copy code are available in the explorer. These are excerpts within the worker's surrounding scope, rather than standalone programs. The interface uses international orange (`#FF4F00`).
@@ -59,21 +59,35 @@ brew install fpc typescript rust sbcl openjdk dotnet go zig ldc gcc nim ghc \
 
 Apple Command Line Tools provide assembly, C, C++ and Swift. The app checks executable versions before marking a runtime ready, then builds and verifies its worker when used. Some JVM tools may download dependencies during their first build. Homebrew OpenJDK is detected directly without changing system Java registration.
 
-## Measurement contract
+## Measurement contract (v3)
 
-- Calculate the first N primes beginning with 2; N is restricted to 1–10,000,000.
-- Use an odd-only Sieve of Eratosthenes with a common conservative search bound supplied by the coordinator.
-- Include fresh buffer allocation, initialization, marking composites and scanning to the Nth prime in calculation timing.
-- Exclude correctness checks, serialization, printing and compilation from calculation timing. Workers execute warm-ups and measured repetitions in the same process.
-- Startup mode launches a fresh prepared worker for each measurement and includes process startup, calculation, checksum computation and output. It does not warm up or include compilation. Script runtimes that compile while loading include that loading cost in startup mode.
-- Use monotonic clocks. Timer resolution differs between runtimes, so very small workloads may report zero or identical measurements.
-- Run one language worker at a time and shuffle language order per comparison. Repetitions for a language are consecutive; order is not shuffled between individual samples. Background activity, CPU scheduling and temperature can still affect results.
-- Use optimized release builds for ahead-of-time compiled languages. Guile Scheme is compiled to bytecode during preparation, before either timing mode. Clojure uses primitive arithmetic and direct byte-array access, with boxing and reflection diagnostics enabled. Flags and runtime versions are recorded with each result. C# and F# support .NET SDK 6 or newer; build-server flags are enabled only on SDK 7 or newer.
-- The assembly kernel performs marking and scanning in handwritten assembly. Its C harness supplies allocation, monotonic timing, checksum verification and output.
-- Use mutable byte storage where available. Lua uses a table; Erlang and Elixir use persistent Erlang arrays. These differences are disclosed in the setup and results views. TypeScript runs emitted JavaScript through Node.js.
-- Compare each measurement's prime count, last prime and modular sum checksum against an independent full-number reference sieve. This catches common implementation failures but a checksum is not a mathematical proof of an identical prime sequence.
+- **First N primes:** find 1–10,000,000 primes starting at 2 using a common conservative bound. **Upper limit:** find every prime at or below 2–200,000,000. These are different workloads and are never merged into one ranking.
+- **Calculation:** time fresh allocation, initialization, marking and result scanning; exclude checksums, printing and preparation. **Startup + calculation:** time a fresh process per sample, including verification/output and process-supervision overhead, but excluding preparation. Startup has no warm-ups.
+- **Sieve throughput:** count complete, freshly allocated sieves during a monotonic wall-clock window. Include initialization, marking, a small observable read on every pass, and release of prior buffers. Retain the last measured sieve and independently verify it after the window. Result scanning, checksum and output are outside the window. Passes/second uses the actual elapsed window, including its final complete pass. Dropping prior references does not force garbage collection; runtime collection costs remain wherever that runtime incurs them.
+- The duration harness is available for eight variants across Python, R, Swift, Fortran and assembly. The 35 original workers support both latency workloads. Asking an original worker for throughput reports an unsupported combination rather than substituting another worker.
+- Compile once per comparison using optimized release flags, then run workers sequentially in a newly shuffled order each round. Each round starts a new process; calculation and throughput repeat the configured warm-up passes in that process. Samples within a round are consecutive. Default settings retain the original one-round baseline comparison; the Drag Race preset uses three rounds.
+- Record raw samples, actual throughput windows and pass counts, per-thread rates, median score, interquartile range (IQR), execution order, CPU/OS/host architecture, tool versions, commands, source hashes and implementation metadata. All current sieves use one computation thread; runtime housekeeping threads may exist. Host architecture metadata does not prove each interpreter/compiler emits native code.
+- Compare every sample's count, last prime and modular-sum checksum with an independent full-number reference sieve. For protocol-3 workers at limits up to 100,000, also compare the complete sequence with an independent trial-division reference. Startup mode performs this sequence check in one separate, untimed launch after that implementation's first-round startup samples; timed launches emit compact signatures for both baselines and variants. The boundary-validation script does the same sequence checks across squares and layout boundaries. Checksums at larger limits are a practical check, not proof of sequence identity.
+- The timeout applies to the full worker process for each round, including startup, warm-ups, the final pass beyond each window deadline, verification and output. Merely exceeding the sum of requested windows does not guarantee completion. Start with twice the window total (at least 30 seconds), then allow more for slow runtimes or large limits. This suggestion does not predict actual overhead or silently change the chosen timeout.
+- Timer resolution differs. Very small latency workloads can report zero; use larger workloads or duration windows. IQR describes the middle 50% spread; it is not a confidence interval or a significance test. Treat small differences cautiously.
 
-The leaderboard ranks medians and shows the arithmetic mean, minimum/maximum measurements and relative times. Both mean and median use only measured iterations, excluding warm-ups. With one iteration, mean and median equal that single measurement. CSV and JSON exports include iteration counts, mean, median, and raw samples; older saved comparisons derive the new statistics from their existing samples. Small differences should not be treated as definitive wins. There are no GPU, external prime-library or parallel sieve implementations in this roster. Runtime housekeeping threads may still exist.
+`implementations.json` defines eight original variants: Python bulk bytearray, R bulk raw-vector marking, Swift byte/packed/striped layouts, Fortran byte/packed layouts, and assembly with a conditional-count scan. The original 35 workers remain unchanged. A tuned variant is an optimization candidate, not a promise to beat the baseline. Result records snapshot metadata so registry changes cannot rename historical runs. Old history without a contract version remains **v1**; new runs use **v3**.
+
+Assembly is explicitly **an assembly kernel with a C harness** for allocation, timing and output. R uses a C clock bridge. There are no GPU, external prime-library or parallel-sieve implementations. Mutable byte storage is used where available; Lua tables and Erlang/Elixir persistent arrays retain their disclosed representation differences.
+
+The design is inspired by [PlummersSoftwareLLC/Primes](https://github.com/PlummersSoftwareLLC/Primes), whose submissions distinguish implementation, algorithm, storage and thread categories. Our Drag Race preset follows the one-million/five-second workload convention; it is **not an upstream-certified submission or directly comparable published score**. Our startup and first-N results are different tests. No upstream implementation source was imported. See [the validation record](Validation/README.md) for tested platforms and measured comparisons.
+
+```sh
+.build/debug/primesieve-cli implementations
+.build/debug/primesieve-cli run --languages python,r,swift,fortran,assembly \
+  --limit 1000000 --variants all --repetitions 5 --rounds 3
+.build/debug/primesieve-cli run --languages python,r,swift,fortran,assembly --drag-race
+# Select specific implementations instead of a registry group:
+.build/debug/primesieve-cli run --languages swift --limit 1000000 \
+  --implementations swift-byte,swift-striped --mode throughput --seconds 5 --rounds 3
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer \
+  python3 scripts/validate-variants.py --require-all --output Validation/variant-boundaries.json
+```
 
 ## Data and project layout
 

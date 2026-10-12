@@ -44,25 +44,33 @@ public enum SessionStore {
             results[index]["meanNS"] = result.meanNS
             results[index]["medianNS"] = result.medianNS
             results[index]["iterations"] = result.samplesNS.count
+            results[index]["score"] = result.score
+            results[index]["scoreUnit"] = result.isThroughput ? "passes/second" : "nanoseconds"
+            results[index]["interquartileRange"] = result.interquartileRange
         }
         document["results"] = results
         return try JSONSerialization.data(withJSONObject: document, options: [.prettyPrinted, .sortedKeys])
     }
     public static func csv(_ session: BenchmarkSession) -> String {
         func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-        var lines = ["rank,language,prime_count,timing_mode,iterations,mean_ns,median_ns,minimum_ns,maximum_ns,samples_ns,last_prime,checksum,runtime,compiler_command,source_sha256,machine,date,executable_path,helper_tools,worker_launch,source_files,source_hash_format"]
-        for (index, result) in session.results.sorted(by: { $0.medianNS < $1.medianNS }).enumerated() {
+        var lines = ["rank,language,prime_count,timing_mode,iterations,mean_ns,median_ns,minimum_ns,maximum_ns,samples_ns,last_prime,checksum,runtime,compiler_command,source_sha256,machine,date,executable_path,helper_tools,worker_launch,source_files,source_hash_format,implementation_id,implementation_name,workload,upper_limit,contract_version,contract,rounds,round_order,score,score_unit,iqr,windows,machine_details"]
+        for (index, result) in session.results.sorted(by: BenchmarkResult.faster).enumerated() {
             let helpers = (result.helperTools ?? []).map { "\($0.role): \($0.executablePath) [\($0.version)]" }.joined(separator: "; ")
             let samples = result.samplesNS.map { String($0) }.joined(separator: ";")
             let format = result.sourceHashFormat.map { String($0) } ?? "legacy"
-            let cells: [String] = [String(index+1), result.language, String(session.configuration.primeCount), session.configuration.mode.rawValue,
+            let cells: [String] = [String(index+1), result.language, String(result.signature.count), session.configuration.mode.rawValue,
                          String(result.samplesNS.count), String(result.meanNS), String(result.medianNS), String(result.minimumNS), String(result.maximumNS), samples,
                          String(result.signature.lastPrime), String(result.signature.checksum), result.runtimeVersion,
                          result.command.joined(separator: " "), result.sourceHash, session.machine, ISO8601DateFormatter().string(from: session.date),
                          result.executablePath,
                          helpers,
                          (result.launchCommand ?? []).joined(separator: " "), (result.sourceFiles ?? []).joined(separator: ";"),
-                         format]
+                         format, result.id, result.implementation?.name ?? "Legacy implementation",
+                         session.configuration.workload.rawValue, String(session.configuration.sieveLimit), String(session.configuration.contractVersion),
+                         result.contract ?? "Legacy contract", String(session.configuration.rounds), String(describing: result.roundOrders ?? []),
+                         String(result.score), result.isThroughput ? "passes/second" : "nanoseconds", String(result.interquartileRange),
+                         String(data: (try? JSONEncoder().encode(result.windows)) ?? Data(), encoding: .utf8) ?? "",
+                         String(data: (try? JSONEncoder().encode(session.machineDetails)) ?? Data(), encoding: .utf8) ?? ""]
             lines.append(cells.map(quote).joined(separator: ","))
         }
         return lines.joined(separator: "\n") + "\n"

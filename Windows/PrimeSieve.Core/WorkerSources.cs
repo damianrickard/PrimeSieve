@@ -31,6 +31,8 @@ public static class WorkerSources
         }
         return Convert.ToHexStringLower(hash.GetHashAndReset());
     }
+    public static CodeSection[] Sections(SieveImplementation implementation) => implementation.IsBaseline ? Sections(implementation.Language)
+        : Parse(File.ReadAllText(PathFor(implementation.LanguageID == "assembly" ? "tuned_x86_64.s" : implementation.Source)));
     public static CodeSection[] Sections(Language language) => Parse(File.ReadAllText(PathFor(language.Id == "assembly" ? "sieve_x86_64.s" : language.Source)));
     public static CodeSection[] Parse(string source)
     {

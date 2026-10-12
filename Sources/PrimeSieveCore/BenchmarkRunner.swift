@@ -4,86 +4,155 @@ public enum BenchmarkEvent: Sendable {
     case preparingReference
     case preparing(String, Int, Int)
     case measuring(String, Int, Int)
+    case roundOrder([String])
     case result(BenchmarkResult)
+    case roundCompleted([BenchmarkResult])
     case failure(String, String)
 }
 
 public enum BenchmarkRunner {
+    private struct Worker {
+        var directory: URL
+        var prepared: Prepared
+        var environment: [String: String]
+        var result: BenchmarkResult
+    }
     public static func run(statuses: [RuntimeStatus], configuration: BenchmarkConfiguration,
                            overrides: [String: String] = [:],
                            event: @escaping @Sendable (BenchmarkEvent) async -> Void = { _ in }) async throws -> BenchmarkSession {
+        var configuration = configuration
+        configuration.contractVersion = 3
         try configuration.validate()
-        guard !statuses.isEmpty else { throw BenchmarkError.message("Select at least one available language.") }
-        guard statuses.allSatisfy(\.available) else { throw BenchmarkError.message("Some selected languages are not installed.") }
+        try SieveImplementation.validateRegistry()
+        guard !statuses.isEmpty, statuses.allSatisfy(\.available) else {
+            throw BenchmarkError.message("Select at least one available language.")
+        }
+        let choices = statuses.flatMap { status in
+            SieveImplementation.selected(for: status.id, configuration: configuration).map { (status, $0) }
+        }
+        guard !choices.isEmpty else { throw BenchmarkError.message("No implementations match the selected languages and filter.") }
+        if let ids = configuration.implementationIDs {
+            let available = Set(choices.map { $0.1.id })
+            guard !ids.isEmpty, Set(ids).isSubset(of: available) else { throw BenchmarkError.message("Unknown implementation or missing selected runtime.") }
+        }
         var session = BenchmarkSession(configuration: configuration)
         await event(.preparingReference)
-        let reference = try PrimeReference.signature(count: configuration.primeCount, limit: configuration.sieveLimit)
-        let order = statuses.shuffled()
-        for (index, status) in order.enumerated() {
+        let reference = try PrimeReference.signature(configuration: configuration)
+        let sequence = configuration.sieveLimit <= 100_000 ? PrimeReference.sequence(count: reference.count, limit: configuration.sieveLimit) : nil
+        var workers: [Worker] = []
+        defer { for worker in workers { try? FileManager.default.removeItem(at: worker.directory) } }
+        for (index, choice) in choices.enumerated() {
+            let (status, implementation) = choice
             try Task.checkCancellation()
-            await event(.preparing(status.language.name, index, order.count))
+            await event(.preparing("\(status.language.name) · \(implementation.name)", index, choices.count))
             do {
-                let result = try await benchmark(status: status, configuration: configuration, reference: reference, overrides: overrides) {
-                    await event(.measuring(status.language.name, index, order.count))
+                if configuration.mode == .throughput && !implementation.supportsThroughput {
+                    throw BenchmarkError.message("This baseline has no duration harness. Choose a tuned variant for sieve throughput.")
                 }
-                session.results.append(result)
-                await event(.result(result))
+                workers.append(try await prepareWorker(status: status, implementation: implementation, config: configuration, reference: reference, overrides: overrides))
             } catch is CancellationError { throw CancellationError() }
             catch {
-                session.failures[status.language.name] = error.localizedDescription
-                await event(.failure(status.language.name, error.localizedDescription))
+                session.failures[implementation.id] = error.localizedDescription
+                await event(.failure(implementation.id, error.localizedDescription))
             }
         }
-        session.results.sort { $0.medianNS < $1.medianNS }
+        for round in 0..<configuration.rounds {
+            let order = workers.indices.filter { session.failures[workers[$0].result.id] == nil }.shuffled()
+            session.executionOrder?.append(order.map { workers[$0].result.id })
+            await event(.roundOrder(order.map { workers[$0].result.id }))
+            for (position, index) in order.enumerated() {
+                try Task.checkCancellation()
+                let worker = workers[index]
+                let implementation = worker.result.implementation!
+                await event(.measuring("\(worker.result.displayName) · round \(round + 1)/\(configuration.rounds)", round * choices.count + position, configuration.rounds * choices.count))
+                do {
+                    let base = [String(reference.count), String(configuration.sieveLimit)]
+                    func arguments(warm: Int, runs: Int, fullSequence: Bool = false) -> [String] {
+                        var args = worker.prepared.arguments + base + [String(warm), String(runs)]
+                        if !implementation.isBaseline {
+                            args += [configuration.mode == .throughput ? "throughput" : "calculation",
+                                     String(configuration.durationSeconds), configuration.workload == .firstN ? "count" : "limit",
+                                     implementation.variant, sequence != nil && (configuration.mode != .startup || fullSequence) ? "1" : "0"]
+                        }
+                        return args
+                    }
+                    workers[index].result.launchCommand = [worker.prepared.executable.path] + arguments(warm: configuration.mode == .startup ? 0 : configuration.warmups, runs: configuration.mode == .startup ? 1 : configuration.repetitions)
+                    var samples: [WorkerSample] = []
+                    var elapsed: [Double] = []
+                    if configuration.mode == .startup {
+                        for _ in 0..<configuration.repetitions {
+                            let output = try await ProcessExecutor.run(executable: worker.prepared.executable, arguments: arguments(warm: 0, runs: 1),
+                                directory: worker.directory, timeout: configuration.timeoutSeconds, environment: worker.environment)
+                            samples += try decode(output.stdout, expectedSamples: 1, reference: reference)
+                            elapsed.append(output.elapsedNS)
+                        }
+                        // Full output is checked separately, after startup samples, so it cannot inflate their wall time.
+                        if round == 0, !implementation.isBaseline, let sequence {
+                            let verification = try await ProcessExecutor.run(executable: worker.prepared.executable,
+                                arguments: arguments(warm: 0, runs: 1, fullSequence: true), directory: worker.directory,
+                                timeout: configuration.timeoutSeconds, environment: worker.environment)
+                            _ = try decode(verification.stdout, expectedSamples: 1, reference: reference, sequence: sequence)
+                        }
+                    } else {
+                        let output = try await ProcessExecutor.run(executable: worker.prepared.executable,
+                            arguments: arguments(warm: configuration.warmups, runs: configuration.repetitions), directory: worker.directory,
+                            timeout: configuration.timeoutSeconds, environment: worker.environment)
+                        samples = try decode(output.stdout, expectedSamples: configuration.repetitions, reference: reference,
+                                             sequence: implementation.isBaseline ? nil : sequence,
+                                             minimumWindowSeconds: configuration.mode == .throughput ? configuration.durationSeconds : nil)
+                        elapsed = samples.map(\.elapsedNS)
+                    }
+                    workers[index].result.samplesNS += elapsed
+                    workers[index].result.roundOrders?.append(round + 1)
+                    if configuration.mode == .throughput {
+                        workers[index].result.windows = (workers[index].result.windows ?? []) + samples.map { .init(passes: $0.passes!, elapsedNS: $0.elapsedNS) }
+                    }
+                    // Per-worker events report progress; only complete rounds enter the leaderboard.
+                    await event(.result(workers[index].result))
+                } catch is CancellationError { throw CancellationError() }
+                catch {
+                    // Never rank an entry which failed any round as a completed comparison.
+                    session.results.removeAll { $0.id == implementation.id }
+                    session.failures[implementation.id] = error.localizedDescription
+                    await event(.failure(implementation.id, error.localizedDescription))
+                }
+            }
+            try Task.checkCancellation()
+            session.results = workers.map(\.result).filter { session.failures[$0.id] == nil }
+            await event(.roundCompleted(session.results))
+        }
+        session.results.sort(by: BenchmarkResult.faster)
         session.completed = true
         return session
     }
-
-    private static func benchmark(status: RuntimeStatus, configuration: BenchmarkConfiguration,
-                                  reference: PrimeSignature, overrides: [String: String], measuring: @escaping () async -> Void) async throws -> BenchmarkResult {
-        let language = status.language
-        guard let tool = status.executable else { throw BenchmarkError.message("\(language.name) is not installed.") }
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrimeSieve-\(language.id)-\(UUID().uuidString)")
+    private static func prepareWorker(status: RuntimeStatus, implementation: SieveImplementation,
+                                      config: BenchmarkConfiguration, reference: PrimeSignature,
+                                      overrides: [String: String]) async throws -> Worker {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrimeSieve-\(implementation.id)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let workers = language.sourceURL.deletingLastPathComponent()
-        var sourceNames = WorkerSources.names(for: language)
-        for name in sourceNames {
-            try FileManager.default.copyItem(at: workers.appendingPathComponent(name), to: directory.appendingPathComponent(name))
-        }
-        var toolchain = try WorkerToolchain.resolve(language: language, primary: tool, overrides: overrides)
-        try toolchain.bindHelpers(in: directory)
-        let helpers = try await toolchain.records()
-        let compileStart = DispatchTime.now().uptimeNanoseconds
-        let prepared = try await prepare(language: language, tool: tool, directory: directory,
-            timeout: max(configuration.timeoutSeconds, 120), toolchain: toolchain)
-        let compilation = prepared.compiled ? Double(DispatchTime.now().uptimeNanoseconds - compileStart) / 1e9 : 0
-        sourceNames += prepared.generatedSources
-        let hash = try WorkerSources.hash(names: sourceNames, directory: directory)
-        await measuring()
-        let base = [String(configuration.primeCount), String(configuration.sieveLimit)]
-        var samples: [Double] = []
-        if configuration.mode == .calculation {
-            let output = try await ProcessExecutor.run(executable: prepared.executable,
-                arguments: prepared.arguments + base + [String(configuration.warmups), String(configuration.repetitions)],
-                directory: directory, timeout: configuration.timeoutSeconds, environment: toolchain.environment)
-            let decoded = try decode(output.stdout, expectedSamples: configuration.repetitions, reference: reference)
-            samples = decoded.map(\.elapsedNS)
-        } else {
-            for _ in 0..<configuration.repetitions {
-                let output = try await ProcessExecutor.run(executable: prepared.executable,
-                    arguments: prepared.arguments + base + ["0", "1"], directory: directory, timeout: configuration.timeoutSeconds, environment: toolchain.environment)
-                _ = try decode(output.stdout, expectedSamples: 1, reference: reference)
-                samples.append(output.elapsedNS)
+        do {
+            var names = implementation.files()
+            for name in names {
+                try FileManager.default.copyItem(at: status.language.sourceURL.deletingLastPathComponent().appendingPathComponent(name), to: directory.appendingPathComponent(name))
             }
-        }
-        return .init(id: language.id, language: language.name, runtimeVersion: status.version,
-            executablePath: tool.path, samplesNS: samples, compilationSeconds: compilation,
-            signature: reference, command: prepared.buildDescription, sourceHash: hash, helperTools: helpers,
-            launchCommand: [prepared.executable.path] + prepared.arguments, sourceFiles: sourceNames.sorted(), sourceHashFormat: 2)
+            var toolchain = try WorkerToolchain.resolve(language: status.language, primary: status.executable!, overrides: overrides)
+            try toolchain.bindHelpers(in: directory)
+            let helpers = try await toolchain.records()
+            let start = DispatchTime.now().uptimeNanoseconds
+            let prepared = try await prepare(language: status.language, tool: status.executable!, directory: directory,
+                                             timeout: max(config.timeoutSeconds, 120), toolchain: toolchain, implementation: implementation)
+            let compilation = prepared.compiled ? Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9 : 0
+            names += prepared.generatedSources
+            var result = BenchmarkResult(id: implementation.id, language: status.language.name, runtimeVersion: status.version,
+                executablePath: status.executable!.path, samplesNS: [], compilationSeconds: compilation, signature: reference,
+                command: prepared.buildDescription, sourceHash: try WorkerSources.hash(names: names, directory: directory),
+                helperTools: helpers, launchCommand: [prepared.executable.path] + prepared.arguments, sourceFiles: names.sorted(), sourceHashFormat: 2)
+            result.implementation = implementation; result.roundOrders = []; result.contract = config.measurementContract
+            return Worker(directory: directory, prepared: prepared, environment: toolchain.environment, result: result)
+        } catch { try? FileManager.default.removeItem(at: directory); throw error }
     }
-
-    public static func decode(_ output: String, expectedSamples: Int, reference: PrimeSignature) throws -> [WorkerSample] {
+    public static func decode(_ output: String, expectedSamples: Int, reference: PrimeSignature,
+                              sequence: [Int]? = nil, minimumWindowSeconds: Double? = nil) throws -> [WorkerSample] {
         var samples: [WorkerSample] = []
         for line in output.split(separator: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -94,11 +163,15 @@ public enum BenchmarkRunner {
             guard sample.elapsedNS.isFinite, sample.elapsedNS >= 0, sample.signature == reference else {
                 throw BenchmarkError.message("Correctness verification failed. This result was excluded from the leaderboard.")
             }
+            if let sequence, sample.primes != sequence { throw BenchmarkError.message("Complete prime sequence verification failed.") }
+            if let seconds = minimumWindowSeconds {
+                guard let passes = sample.passes, passes > 0, sample.elapsedNS >= seconds * 1e9 else {
+                    throw BenchmarkError.message("Invalid throughput window: positive passes and the full requested duration are required.")
+                }
+            }
             samples.append(sample)
         }
-        guard samples.count == expectedSamples else {
-            throw BenchmarkError.message("Expected \(expectedSamples) measurements; received \(samples.count).")
-        }
+        guard samples.count == expectedSamples else { throw BenchmarkError.message("Expected \(expectedSamples) measurements; received \(samples.count).") }
         return samples
     }
 
@@ -110,9 +183,9 @@ public enum BenchmarkRunner {
         var generatedSources: [String] = []
     }
 
-    private static func prepare(language: Language, tool: URL, directory: URL, timeout: Double, toolchain: WorkerToolchain) async throws -> Prepared {
+    private static func prepare(language: Language, tool: URL, directory: URL, timeout: Double, toolchain: WorkerToolchain, implementation: SieveImplementation) async throws -> Prepared {
         let binary = directory.appendingPathComponent("worker")
-        let source = language.source
+        let source = implementation.source
         func compile(_ args: [String], executable: URL? = nil) async throws {
             _ = try await ProcessExecutor.run(executable: executable ?? tool, arguments: args, directory: directory, timeout: timeout, environment: toolchain.environment)
         }
@@ -123,7 +196,7 @@ public enum BenchmarkRunner {
         switch language.id {
         case "c": return try await native(["-O3", "-std=c11", source, "-o", binary.path])
         case "cpp": return try await native(["-O3", "-std=c++17", source, "-o", binary.path])
-        case "assembly": return try await native(["-O3", source, "sieve_\(BenchmarkSession.architecture).s", "-o", binary.path])
+        case "assembly": return try await native(["-O3", source, implementation.isBaseline ? "sieve_\(BenchmarkSession.architecture).s" : "tuned_\(BenchmarkSession.architecture).s", "-o", binary.path])
         case "swift": return try await native(["-O", source, "-o", binary.path])
         case "rust": return try await native(["-C", "opt-level=3", source, "-o", binary.path])
         case "go": return try await native(["build", "-o", binary.path, source])

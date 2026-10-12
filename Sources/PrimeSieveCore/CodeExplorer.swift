@@ -10,6 +10,13 @@ public struct PrimeCodeSection: Identifiable, Sendable {
 }
 
 public enum PrimeCodeExplorer {
+    public static func sections(for implementation: SieveImplementation, architecture: String = BenchmarkSession.architecture) throws -> [PrimeCodeSection] {
+        if implementation.isBaseline { return try sections(for: implementation.language, architecture: architecture) }
+        let url = implementation.languageID == "assembly"
+            ? implementation.sourceURL.deletingLastPathComponent().appendingPathComponent("tuned_\(architecture).s") : implementation.sourceURL
+        return try parse(String(contentsOf: url, encoding: .utf8))
+    }
+
     /// Assembly exposes its calculation kernel rather than its timing and output harness.
     public static func sourceURL(for language: Language, architecture: String = BenchmarkSession.architecture) -> URL {
         if language.id == "assembly" {

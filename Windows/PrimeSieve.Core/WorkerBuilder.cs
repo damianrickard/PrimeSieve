@@ -4,9 +4,9 @@ public sealed record PreparedWorker(string Executable, string[] Arguments, strin
 public static class WorkerBuilder
 {
     public static async Task<PreparedWorker> PrepareAsync(Language language, string tool, string directory,
-        Toolchain toolchain, double timeout, CancellationToken token)
+        Toolchain toolchain, double timeout, CancellationToken token, SieveImplementation? implementation = null)
     {
-        var source = language.Source;
+        var source = implementation?.Source ?? language.Source;
         var binary = Path.Combine(directory, OperatingSystem.IsWindows() ? "worker.exe" : "worker");
         async Task Build(string[] args, string? compiler = null) =>
             _ = await ProcessExecutor.RunAsync(compiler ?? tool, args, directory, timeout, token, toolchain.Environment);
@@ -19,7 +19,7 @@ public static class WorkerBuilder
         {
             case "c": return await Native("-O3", "-std=c11", source, "-o", binary);
             case "cpp": return await Native("-O3", "-std=c++17", source, "-o", binary);
-            case "assembly": return await Native("-O3", source, "sieve_x86_64.s", "-o", binary);
+            case "assembly": return await Native("-O3", source, implementation is { IsBaseline: false } ? "tuned_x86_64.s" : "sieve_x86_64.s", "-o", binary);
             case "swift": return await Native("-O", source, "-o", binary);
             case "rust": return await Native("-C", "opt-level=3", source, "-o", binary);
             case "go": return await Native("build", "-o", binary, source);

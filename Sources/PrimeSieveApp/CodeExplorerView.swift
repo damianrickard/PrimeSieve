@@ -13,9 +13,13 @@ private final class ExplorerState: ObservableObject {
     @Published var error: String?
 
     init(languageID: String) { self.languageID = languageID }
-    var language: Language { Language.all.first { $0.id == languageID } ?? Language.all[0] }
+    var implementation: SieveImplementation { SieveImplementation.all.first { $0.id == languageID } ?? SieveImplementation.all[0] }
+    var language: Language { implementation.language }
     func load() {
-        do { sections = try PrimeCodeExplorer.sections(for: language, architecture: architecture); error = nil }
+        do {
+            try SieveImplementation.validateRegistry()
+            sections = try PrimeCodeExplorer.sections(for: implementation, architecture: architecture); error = nil
+        }
         catch { sections = []; self.error = error.localizedDescription }
     }
 }
@@ -42,12 +46,12 @@ struct CodeExplorerView: View {
                     TextField("Find a language", text: $state.search).textFieldStyle(.roundedBorder)
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 3) {
-                            ForEach(Language.all.sorted { $0.name < $1.name }.filter {
-                                state.search.isEmpty || $0.name.localizedCaseInsensitiveContains(state.search)
+                            ForEach(SieveImplementation.all.sorted { ($0.language.name + $0.name) < ($1.language.name + $1.name) }.filter {
+                                state.search.isEmpty || $0.name.localizedCaseInsensitiveContains(state.search) || $0.language.name.localizedCaseInsensitiveContains(state.search)
                             }) { language in
                                 Button { state.languageID = language.id } label: {
                                     HStack {
-                                        Text(language.name)
+                                        Text("\(language.language.name) · \(language.name)")
                                         Spacer()
                                         if state.languageID == language.id { Image(systemName: "chevron.right") }
                                     }.padding(9).contentShape(Rectangle())
@@ -58,11 +62,11 @@ struct CodeExplorerView: View {
                         }
                     }
                     Text("All 35 languages are available to explore, even without an installed runtime.").font(.caption).foregroundStyle(.secondary)
-                }.padding(16).frame(width: 180)
+                }.padding(16).frame(width: 240)
                 Divider()
                 VStack(alignment: .leading, spacing: 12) {
                     HStack {
-                        Text(state.language.name).font(.title2.weight(.semibold)).foregroundStyle(accent)
+                        Text("\(state.language.name) · \(state.implementation.name)").font(.title2.weight(.semibold)).foregroundStyle(accent)
                         Spacer()
                         Stepper("Text \(Int(state.fontSize)) pt", value: $state.fontSize, in: 11...20).fixedSize()
                         Button("Copy code") {
@@ -70,15 +74,15 @@ struct CodeExplorerView: View {
                             NSPasteboard.general.setString(state.sections.map(\.code).joined(separator: "\n\n"), forType: .string)
                         }.disabled(state.sections.isEmpty)
                     }
-                    if state.languageID == "assembly" {
+                    if state.language.id == "assembly" {
                         Picker("Architecture", selection: $state.architecture) {
                             Text("Apple Silicon · ARM64").tag("arm64")
                             Text("Intel · x86-64").tag("x86_64")
                         }.pickerStyle(.segmented)
                     }
-                    Text("Actual calculation excerpts from the bundled worker. n is the number of primes; limit is the shared search bound. Timing, repetition and result reporting are omitted.")
+                    Text("Actual bundled calculation code. n is the requested count; limit is inclusive. Throughput times allocation and marking; result scanning follows the window.")
                         .font(.callout).foregroundStyle(.secondary)
-                    if !state.language.note.isEmpty { Text(state.language.note).font(.caption).foregroundStyle(.secondary) }
+                    if !state.implementation.explanation.isEmpty { Text(state.implementation.explanation).font(.caption).foregroundStyle(.secondary) }
                     if let error = state.error {
                         Text(error).foregroundStyle(.red)
                     }

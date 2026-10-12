@@ -12,6 +12,13 @@ final class AppModel: ObservableObject {
     @Published var warmups = 3
     @Published var timeout = 120.0
     @Published var mode: TimingMode = .calculation
+    @Published var workload: Workload = .firstN
+    @Published var upperLimit = "1000000"
+    @Published var variants: ImplementationSelection = .baseline
+    @Published var rounds = 1
+    @Published var seconds = 5.0
+    @Published var storageFilter = "All storage"
+
     @Published var isRunning = false
     @Published var isDiscovering = false
     @Published var progress = 0.0
@@ -37,11 +44,12 @@ final class AppModel: ObservableObject {
            (try? config.validate()) != nil {
             primeCount = String(config.primeCount); repetitions = config.repetitions
             warmups = config.warmups; timeout = config.timeoutSeconds; mode = config.mode
+            workload = config.workload; upperLimit = String(config.upperLimit); variants = config.implementations; rounds = config.rounds; seconds = config.durationSeconds
         }
     }
 
     var preferenceSignature: String {
-        [primeCount, String(repetitions), String(warmups), String(timeout), mode.rawValue, selected.sorted().joined(separator: ",")].joined(separator: "|")
+        [primeCount, upperLimit, workload.rawValue, variants.rawValue, String(rounds), String(seconds), String(repetitions), String(warmups), String(timeout), mode.rawValue, selected.sorted().joined(separator: ",")].joined(separator: "|")
     }
     func savePreferences() {
         UserDefaults.standard.set(selected.sorted(), forKey: "selectedLanguages")
@@ -51,12 +59,28 @@ final class AppModel: ObservableObject {
         }
     }
 
-    var results: [BenchmarkResult] { session?.results.sorted { $0.medianNS < $1.medianNS } ?? [] }
+    var results: [BenchmarkResult] {
+        (session?.results ?? []).filter { storageFilter == "All storage" || (storageFilter == "Packed bits" ? $0.implementation?.bits == 1 : $0.implementation?.bits == 8) }.sorted(by: BenchmarkResult.faster)
+    }
+    var selectedImplementationCount: Int {
+        guard let configuration else { return 0 }
+        return selectedReady.flatMap { SieveImplementation.selected(for: $0.id, configuration: configuration) }.count
+    }
+    func dragRacePreset() {
+        workload = .upperLimit; upperLimit = "1000000"; mode = .throughput
+        variants = .candidates; seconds = 5; repetitions = 1; rounds = 3
+        selected = Set(runtimes.filter { $0.available && ["python", "swift", "fortran", "assembly", "r"].contains($0.id) }.map(\.id))
+    }
     var readyCount: Int { runtimes.filter(\.available).count }
     var selectedReady: [RuntimeStatus] { runtimes.filter { $0.available && selected.contains($0.id) } }
     var configuration: BenchmarkConfiguration? {
-        guard let count = Int(primeCount.replacingOccurrences(of: ",", with: "")) else { return nil }
-        return .init(primeCount: count, repetitions: repetitions, warmups: warmups, timeoutSeconds: timeout, mode: mode)
+        let parsedCount = Int(primeCount.replacingOccurrences(of: ",", with: ""))
+        let parsedLimit = Int(upperLimit.replacingOccurrences(of: ",", with: ""))
+        guard workload == .firstN ? parsedCount != nil : parsedLimit != nil else { return nil }
+        // Preserve valid inactive values for switching back, but never let hidden input block a run.
+        let count = workload == .firstN ? parsedCount! : parsedCount.flatMap { (1...10_000_000).contains($0) ? $0 : nil } ?? 100_000
+        let limit = workload == .upperLimit ? parsedLimit! : parsedLimit.flatMap { (2...200_000_000).contains($0) ? $0 : nil } ?? 1_000_000
+        return .init(primeCount: count, repetitions: repetitions, warmups: warmups, timeoutSeconds: timeout, mode: mode, workload: workload, upperLimit: limit, durationSeconds: seconds, rounds: rounds, implementations: variants)
     }
 
     func refresh() async {
@@ -77,7 +101,10 @@ final class AppModel: ObservableObject {
 
     func run() {
         guard !isRunning, !isDiscovering else { return }
-        guard let config = configuration else { errorMessage = "Enter a whole number of primes."; return }
+        guard let config = configuration else {
+            errorMessage = workload == .firstN ? "Enter a whole number for the prime count." : "Enter a whole number for the inclusive upper limit."
+            return
+        }
         do { try config.validate() } catch { errorMessage = error.localizedDescription; return }
         let languages = selectedReady
         guard !languages.isEmpty else { errorMessage = "Select at least one installed language."; return }
@@ -103,15 +130,15 @@ final class AppModel: ObservableObject {
         switch event {
         case .preparingReference: status = "Calculating the independent correctness reference…"
         case .preparing(let language, let index, let total):
-            status = "Preparing \(language) • \(index + 1) of \(total)"; progress = Double(index) / Double(total)
+            status = "Preparing \(language) • \(index + 1) of \(total)"; progress = 0
         case .measuring(let language, let index, let total):
             status = "Measuring \(language) • \(index + 1) of \(total)"
-        case .result(let result):
-            session?.results.append(result)
-            progress = Double((session?.results.count ?? 0) + (session?.failures.count ?? 0)) / Double(selectedReady.count)
+            progress = Double(index) / Double(max(1, total))
+        case .roundOrder(let order): session?.executionOrder?.append(order)
+        case .result: break // A partial round is progress, not a comparable set of scores.
+        case .roundCompleted(let results): session?.results = results
         case .failure(let language, let error):
-            session?.failures[language] = error
-            progress = Double((session?.results.count ?? 0) + (session?.failures.count ?? 0)) / Double(selectedReady.count)
+            session?.results.removeAll { $0.id == language }; session?.failures[language] = error
         }
     }
     private func finish(_ result: BenchmarkSession) {
@@ -120,7 +147,7 @@ final class AppModel: ObservableObject {
         save(); detachedTask = nil
     }
     private func cancelled() {
-        isRunning = false; status = "Cancelled • completed results retained"
+        isRunning = false; status = "Cancelled • only completed rounds retained"
         save(); detachedTask = nil
     }
     private func failed(_ error: String) {
@@ -145,6 +172,8 @@ final class AppModel: ObservableObject {
         primeCount = String(value.configuration.primeCount)
         repetitions = value.configuration.repetitions; warmups = value.configuration.warmups
         mode = value.configuration.mode; timeout = value.configuration.timeoutSeconds
+        workload = value.configuration.workload; upperLimit = String(value.configuration.upperLimit)
+        variants = value.configuration.implementations; rounds = value.configuration.rounds; seconds = value.configuration.durationSeconds
         progress = value.completed ? 1 : 0
         status = "Saved comparison • \(value.date.formatted(date: .abbreviated, time: .shortened))"
     }

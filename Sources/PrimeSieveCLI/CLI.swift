@@ -18,18 +18,23 @@ struct CLI {
                 }
                 return
             }
+            if args.first == "implementations" {
+                try SieveImplementation.validateRegistry()
+                for item in SieveImplementation.all { print("\(item.id)\t\(item.language.name) · \(item.name)\t\(item.summary)\tthroughput=\(item.supportsThroughput)") }
+                return
+            }
             if args.first == "list" || args.isEmpty {
                 for status in await RuntimeDiscovery.discover() {
                     print("\(status.available ? "READY" : "MISSING")\t\(status.id)\t\(status.language.name)\t\(status.version)")
                 }
                 return
             }
-            guard args.first == "run" else { throw BenchmarkError.message("Usage: primesieve-cli list | verify | run --languages c,swift,pascal --count 100000 [--repetitions 7 --warmups 3 --mode calculation|startup --timeout 120 --output results.json]") }
+            guard args.first == "run" else { throw BenchmarkError.message("Usage: primesieve-cli list | verify | run --languages c,swift,pascal --count 100000 [--repetitions 7 --warmups 3 --mode calculation|startup|throughput --limit 1000000 --variants baseline|tuned|all --implementations ID,ID --rounds 3 --seconds 5 --drag-race --timeout 120 --output results.json]") }
             func option(_ name: String, default value: String) -> String {
                 guard let index = args.firstIndex(of: name), index+1 < args.count else { return value }
                 return args[index+1]
             }
-            let ids = Set(option("--languages", default: "c,cpp,swift,assembly,python,javascript").split(separator: ",").map(String.init))
+            let ids = Set(option("--languages", default: args.contains("--drag-race") ? "python,r,swift,fortran,assembly" : "c,cpp,swift,assembly,python,javascript").split(separator: ",").map(String.init))
             let unknown = ids.subtracting(Set(Language.all.map(\.id)))
             guard unknown.isEmpty else { throw BenchmarkError.message("Unknown languages: \(unknown.sorted().joined(separator: ", "))") }
             guard let count = Int(option("--count", default: "100000")),
@@ -38,11 +43,23 @@ struct CLI {
                   let timeout = Double(option("--timeout", default: "120")) else {
                 throw BenchmarkError.message("Numeric options must contain valid numbers.")
             }
-            let modeString = option("--mode", default: "calculation")
-            guard ["calculation", "startup"].contains(modeString) else { throw BenchmarkError.message("Mode must be calculation or startup.") }
-            let config = BenchmarkConfiguration(primeCount: count, repetitions: repetitions, warmups: warmups,
-                timeoutSeconds: timeout, mode: modeString == "startup" ? .startup : .calculation)
+            let modeString = option("--mode", default: args.contains("--drag-race") ? "throughput" : "calculation")
+            guard ["calculation", "startup", "throughput"].contains(modeString),
+                  let rounds = Int(option("--rounds", default: args.contains("--drag-race") ? "3" : "1")),
+                  let duration = Double(option("--seconds", default: "5")),
+                  let limit = Int(option("--limit", default: "1000000")) else { throw BenchmarkError.message("Invalid mode, rounds, seconds, or limit.") }
+            let selectionString = option("--variants", default: args.contains("--drag-race") ? "tuned" : "baseline")
+            guard ["baseline", "tuned", "all"].contains(selectionString) else { throw BenchmarkError.message("Variants must be baseline, tuned, or all.") }
+            let implementationIDs = option("--implementations", default: "")
+            let config = BenchmarkConfiguration(primeCount: count, repetitions: args.contains("--drag-race") && !args.contains("--repetitions") ? 1 : repetitions,
+                warmups: warmups, timeoutSeconds: timeout,
+                mode: modeString == "startup" ? .startup : modeString == "throughput" ? .throughput : .calculation,
+                workload: args.contains("--limit") || args.contains("--drag-race") ? .upperLimit : .firstN,
+                upperLimit: limit, durationSeconds: duration, rounds: rounds,
+                implementations: selectionString == "tuned" ? .candidates : selectionString == "all" ? .all : .baseline,
+                implementationIDs: implementationIDs.isEmpty ? nil : implementationIDs.split(separator: ",").map(String.init))
             try config.validate()
+            if let guidance = config.timeoutGuidance { FileHandle.standardError.write(Data((guidance + "\n").utf8)) }
             let statuses = await RuntimeDiscovery.discover().filter { ids.contains($0.id) }
             let unavailable = statuses.filter { !$0.available }
             guard unavailable.isEmpty else { throw BenchmarkError.message("Install missing runtimes: \(unavailable.map { $0.language.name }.joined(separator: ", "))") }

@@ -103,6 +103,9 @@ internal static class Program
         await Until(() => File.Exists(pidFile), "Slow probe did not start");
         var pid = int.Parse(File.ReadAllText(pidFile));
         Check(!window.IsIdle, label + " discovery is in progress");
+        if (SieveImplementation.RegistryError is {} registryError)
+            Check(window.PreferencesWarning.Contains(registryError) && ((ComboBox)window.FindName("CodeLanguage")).Items.Count == 35,
+                label + " registry failure is visible without blocking discovery or baseline code");
         var watch = Stopwatch.StartNew();
         window.Close(); // The same Closing event used by the window's close button.
         // Repeated close requests must not dispose/cancel the CTS twice or reopen the window.
@@ -157,7 +160,7 @@ internal static class Program
             if (failure != null) throw failure;
             Check(inspected, result.Id + " details dialog opens and closes without crashing");
             if (result.Id == "csharp")
-                Check(((ComboBox)window.FindName("CodeLanguage")).SelectedItem is Language { Id: "csharp" }, "known language code navigation still works");
+                Check(((ComboBox)window.FindName("CodeLanguage")).SelectedItem is SieveImplementation { Id: "csharp" }, "known language code navigation still works");
         }
         window.Close();
         Check(File.ReadAllText(Path.Combine(store.Root, "Sessions", session.Id + ".json")).Contains("future-language"), "viewing history preserves the original unknown-language record");

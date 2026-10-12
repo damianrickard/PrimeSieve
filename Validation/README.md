@@ -62,3 +62,56 @@ The evidence in this section predates the approved QA remediation above.
 The saved 100,000-prime comparison was reopened through History. Result details and both CSV and JSON exports were exercised in the packaged app. Exported data was parsed to confirm 35 results, zero failures, and ascending median order in the CSV. The rendered window was inspected after correcting chart labels and table selection. Invalid input and runtime setup were also checked through the interface.
 
 The final release app built successfully and passed strict code-signature verification. It is locally ad-hoc signed. Intel assembly was assembled, but Intel execution has not been tested. Results describe these implementations and runtime versions on this Mac, rather than a universal ranking of programming languages.
+
+
+## Workloads and named variants (contract v3, 2026-10-12)
+
+These results concern the new working-tree implementation; they do not describe the previously published v0.1.0 app.
+
+- The Swift suite passed 24 core and three app tests, followed by five focused variant tests after the final coordinator changes. Native Windows passed 146 core checks, 17 WPF checks, and a three-round CLI throughput check.
+- All 35 baselines passed inclusive-limit checks at 2 and 1,024. The packaged macOS UI completed an eight-variant, three-round throughput smoke run; storage filtering, per-thread detail and navigation to the exact variant in the explorer were exercised.
+- Eight protocol-3 variants across Python, R, Swift, Fortran and assembly passed 592 independent complete-sequence/boundary checks on Apple Silicon. Boundaries cover primes, prime squares, byte/bit/stripe boundaries, first-N stopping and actual duration windows. `v3-boundaries-macos.json` records the roster. Original baseline source files are unchanged.
+- On native Windows x64 (`bob`), Python passed the same 74 checks. R, Swift, Fortran and assembly are explicitly skipped because those toolchains are absent. Both macOS and Windows x64 assembly sources also passed cross-assembly syntax checks on the Mac; that does not establish x64 runtime correctness.
+- The Windows rendered smoke check exercised calculation, startup, two-round throughput, history reopening, invalid inputs and the explorer. The revised minimum 1100×840 window passed and its screenshot was inspected. The evidence is in `v3-windows-ui/`; it uses isolated history/preferences.
+- Windows maximum-repetition verification (30 complete sequences at limit 100,000) passed after adding a bounded four-million-character stdout allowance for that protocol path; normal capture limits are preserved.
+- CPU and host architecture are recorded. Per-worker runtime architecture has not been inspected; do not infer that every toolchain uses native execution from the host metadata.
+
+### Repeated performance observations
+
+`v3-latency-macos.json`: Apple M5 Pro, macOS 27.2 arm64, inclusive limit 1,000,000, three randomized rounds, five samples and three warm-up passes per round. Compilation occurred before measurements. These are observations from one session, not statistical superiority claims.
+
+| Implementation | Median calculation | Change relative to its baseline |
+| --- | ---: | ---: |
+| Python baseline / bulk bytearray | 78.242 / 4.947 ms | 15.8× faster |
+| R baseline / bulk raw vector | 122.854 / 3.430 ms | 35.8× faster |
+| Assembly baseline / conditional scan | 0.904 / 0.465 ms | 1.9× faster |
+| Fortran baseline / byte variant | 0.466 / 0.465 ms | Effectively tied |
+| Swift baseline / striped bits | 0.583 / 0.560 ms | Small difference; overlapping variability |
+
+Plain packed bits were slower than their byte baseline in both Swift and Fortran. Keeping the alternatives visible is intentional.
+
+`v3-throughput-macos.json`: the same limit, three five-second windows, three warm-up sieve passes per round. All eight variants passed verification. Median passes/second (IQR): Swift striped 9,313 (121); assembly conditional scan 3,338 (26); Fortran byte 3,330 (24); Python bulk 2,819 (16); Swift byte 2,516 (426); Fortran packed 2,239 (13); Swift packed 1,904 (18); R bulk 644 (2). Throughput excludes result scanning, so its ranking can differ substantially from calculation latency. Each score uses the actual elapsed window and raw pass count.
+
+Machine-specific JSON, logs and screenshots remain ignored by Git. Reproduce boundary checks with `scripts/validate-variants.py`; reproduce comparisons with the commands in the main README. No upstream code was imported, no upstream submission certification is claimed, and these observations are not directly comparable to a different host's published Drag Race leaderboard.
+
+
+### Approved QA remediation
+
+The initial Claude Opus 5.5 review passed with three low-severity findings. All three were accepted and corrected: malformed worker JSON includes a bounded diagnostic excerpt; the Swift registry caches its load result, displays bundle failures and prevents an incomplete roster from being benchmarked; the assembly metadata correctly identifies x86-64 `setcc + add`.
+
+Seven focused Swift tests passed, including missing/malformed/invalid registry cases, bounded diagnostic text, and normal calculation/startup/throughput execution with export round-trips. A disposable copy of the CLI separately verified all 43 valid entries and explicit nonzero failures for missing and malformed registry files. The local macOS app was rebuilt and its signature verified. Historical result snapshots retain their original descriptions; newly recorded assembly results use the corrected metadata.
+
+The second Claude review requested two low-severity changes. Both were accepted: the active workload alone controls input validation, and throughput timeout guidance now accounts for startup, warm-ups, window overrun, verification and output. The timeout finding was accepted as a guidance gap, not as proof that every near-threshold configuration must fail. Both CLIs and interfaces explain the extra budget; twice the window total with a 30-second minimum is a planning suggestion, not a guarantee or an automatic timeout change.
+
+Round-two validation passed: nine Swift core variant tests and five app-model tests; 144 C# checks on macOS; 152 core checks and 17 WPF checks on native Windows. Regression cases cover invalid hidden values in both workload directions, errors naming the visible field, and the 23-window/120-second boundary with a 230-second suggestion. The local macOS app was rebuilt and its signature passed strict verification. No findings were rejected.
+
+The third Claude Opus 5.5 review requested four changes. All were accepted: an explicit Dispatch import for the shared Swift worker; full-sequence verification outside startup timing; publication of results only after complete rounds; and a cached, validated Windows registry whose errors do not prevent runtime discovery. The import matches the existing Windows baseline's portability requirement; native Windows Swift compilation remains unverified because that toolchain is not installed on Bob. No findings were rejected.
+
+Round-three validation passed:
+
+- Full Swift suite: 29 core and five app tests, including first- and second-round cancellation and startup arguments. The local app was rebuilt and passed strict signature verification.
+- All 592 tuned-worker boundary checks on macOS, including the recompiled Swift variants (`qa3-boundaries-macos.json`). All eight variants also passed a two-round startup run at limit 1,024; recorded timed commands end in `full=0` and each result contains exactly two samples (`qa3-startup-macos.json`). These are correctness runs, not new performance comparisons.
+- C# tests: 164 checks on macOS; 177 checks including integration on native Windows. These exercise registry fixtures, complete-round cancellation/history and startup timing arguments.
+- Native Windows UI: 17 checks with the normal bundle, then 19 each in disposable copies with malformed and missing registry files. Both damaged-bundle runs confirmed visible errors, 35 baseline code entries and working startup/refresh discovery. Normal worker resources were untouched.
+
+Cancelled comparisons now keep accumulated samples from the last complete round, excluding implementations that failed. An interrupted first round produces no ranked entries. Startup mode still checks each timed sample's signature; small tuned workloads receive one additional, untimed complete-sequence check before their results are accepted.

@@ -26,6 +26,9 @@ struct ContentView: View {
             Divider()
             VStack(alignment: .leading, spacing: 20) {
                 header
+                if let error = SieveImplementation.registryError {
+                    Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                }
                 configuration
                 if model.isRunning {
                     VStack(alignment: .leading, spacing: 8) {
@@ -38,8 +41,14 @@ struct ContentView: View {
                         ProgressView(value: model.progress).tint(accent)
                     }
                 } else { Text(model.status).font(.callout).foregroundStyle(.secondary) }
-                if model.results.isEmpty { emptyState }
-                else { chart; leaderboard }
+                if model.session?.results.isEmpty != false { emptyState }
+                else {
+                    chart
+                    Picker("Filter results", selection: $model.storageFilter) {
+                        Text("All storage").tag("All storage"); Text("Byte flags").tag("Byte flags"); Text("Packed bits").tag("Packed bits")
+                    }.pickerStyle(.segmented).frame(maxWidth: 400)
+                    leaderboard
+                }
                 if let failures = model.session?.failures, !failures.isEmpty {
                     DisclosureGroup("\(failures.count) language\(failures.count == 1 ? "" : "s") could not complete") {
                         ScrollView {
@@ -114,7 +123,7 @@ struct ContentView: View {
                     Image(systemName: "number.square.fill").font(.system(size: 30)).foregroundStyle(accent)
                     Text("PrimeSieve").font(.system(size: 30, weight: .bold, design: .rounded))
                 }
-                Text("35 languages. One workload.").font(.subheadline).foregroundStyle(.secondary)
+                Text("35 languages. Explicit workloads. Named implementations.").font(.subheadline).foregroundStyle(.secondary)
             }
             Spacer()
             Button { ui.showCode = true } label: { Label("Code explorer", systemImage: "chevron.left.forwardslash.chevron.right") }
@@ -129,10 +138,15 @@ struct ContentView: View {
 
     private var configuration: some View {
         VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Picker("Workload", selection: $model.workload) { ForEach(Workload.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                Picker("Implementations", selection: $model.variants) { ForEach(ImplementationSelection.allCases, id: \.self) { Text($0.rawValue).tag($0) } }
+                Button("Drag Race preset") { model.dragRacePreset() }
+            }.disabled(model.isRunning)
             HStack(alignment: .bottom, spacing: 18) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("PRIMES TO FIND").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    TextField("100000", text: $model.primeCount).font(.system(size: 24, weight: .semibold, design: .monospaced))
+                    Text(model.workload == .firstN ? "PRIMES TO FIND" : "INCLUSIVE UPPER LIMIT").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    TextField("100000", text: model.workload == .firstN ? $model.primeCount : $model.upperLimit).font(.system(size: 24, weight: .semibold, design: .monospaced))
                         .textFieldStyle(.roundedBorder).frame(width: 195).disabled(model.isRunning)
                 }
                 VStack(alignment: .leading, spacing: 6) {
@@ -142,7 +156,7 @@ struct ContentView: View {
                     }.labelsHidden().frame(width: 185).disabled(model.isRunning)
                 }
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("ITERATIONS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    Text(model.mode == .throughput ? "WINDOWS / ROUND" : "SAMPLES / ROUND").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                     Picker("Measured iterations per language", selection: $model.repetitions) {
                         ForEach(1...30, id: \.self) { Text("\($0)×").tag($0) }
                     }.labelsHidden().frame(width: 80).disabled(model.isRunning)
@@ -161,21 +175,33 @@ struct ContentView: View {
             HStack(spacing: 8) {
                 Text("Presets").font(.caption).foregroundStyle(.secondary)
                 ForEach([10_000, 100_000, 1_000_000], id: \.self) { count in
-                    Button(count.formatted()) { model.primeCount = String(count) }.font(.caption)
+                    Button(count.formatted()) { if model.workload == .firstN { model.primeCount = String(count) } else { model.upperLimit = String(count) } }.font(.caption)
                 }
             }.disabled(model.isRunning)
             DisclosureGroup("Advanced settings") {
                 HStack(spacing: 24) {
                     Stepper("\(model.warmups) warm-up runs", value: $model.warmups, in: 0...20).disabled(model.mode == .startup)
+                    Stepper("\(model.rounds) rounds", value: $model.rounds, in: 1...10)
+                    if model.mode == .throughput { HStack { Text("Seconds/window"); TextField("Seconds", value: $model.seconds, format: .number).frame(width: 70) } }
                     Picker("Timeout", selection: $model.timeout) {
                         Text("30 s").tag(30.0); Text("2 min").tag(120.0); Text("10 min").tag(600.0)
                     }.frame(width: 155)
                 }.padding(.top, 8)
+                if let guidance = model.configuration?.timeoutGuidance {
+                    Text(guidance).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
             }.font(.callout).disabled(model.isRunning)
-            Text(model.mode == .calculation
-                 ? "Each language runs \(model.repetitions) measured iterations after warm-up. Mean and median exclude compilation, validation and output."
-                 : "Each language launches \(model.repetitions) fresh processes. Mean and median include startup and calculation; compilation is excluded.")
-                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("\(model.selectedImplementationCount) implementations selected. Round order is randomized; each round starts a fresh process and repeats the configured warm-ups.")
+                .font(.caption).foregroundStyle(.secondary)
+            if model.mode == .throughput {
+                Text("Sieve-only wall-clock windows. Allocation and observation included; scan and verification follow each window. Available for tuned Python, R, Swift, Fortran and assembly. Use an upper-limit workload.").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if model.mode != .throughput {
+                Text(model.mode == .calculation
+                     ? "Each implementation runs \(model.repetitions) measured iterations after warm-up. Mean and median exclude compilation, validation and output."
+                     : "Each implementation launches \(model.repetitions) fresh processes per round. Startup and calculation are included; compilation is excluded.")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
         }.padding(20).background(.quaternary.opacity(0.25), in: RoundedRectangle(cornerRadius: 14))
     }
 
@@ -193,23 +219,23 @@ struct ContentView: View {
     private var chart: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("FASTEST LANGUAGES").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text("FASTEST IMPLEMENTATIONS").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
                 Spacer()
-                Text("Median · lower is faster").font(.caption).foregroundStyle(.secondary)
+                Text(model.results.first?.isThroughput == true ? "Median passes/s · higher is faster" : "Median time · lower is faster").font(.caption).foregroundStyle(.secondary)
             }
             let leaders = Array(model.results.prefix(8))
-            let maximum = leaders.map(\.medianNS).max() ?? 1
+            let maximum = leaders.map(\.score).max() ?? 1
             VStack(spacing: 7) {
                 ForEach(leaders) { result in
                     HStack(spacing: 12) {
-                        Text(result.language).font(.caption).frame(width: 100, alignment: .leading)
+                        Text(result.displayName).font(.caption).lineLimit(1).help(result.displayName).frame(width: 205, alignment: .leading)
                         GeometryReader { geometry in
                             RoundedRectangle(cornerRadius: 3)
                                 .fill(accent.gradient)
-                                .frame(width: maximum > 0 ? max(2, geometry.size.width * CGFloat(result.medianNS / maximum)) : 2, height: 10)
+                                .frame(width: maximum > 0 ? max(2, geometry.size.width * CGFloat(result.score / maximum)) : 2, height: 10)
                         }.frame(height: 10)
-                        Text(TimeDisplay.format(result.medianNS)).font(.caption.monospacedDigit())
-                            .frame(width: 85, alignment: .trailing).foregroundStyle(.secondary)
+                        Text(result.scoreDisplay).font(.caption.monospacedDigit())
+                            .frame(width: 125, alignment: .trailing).foregroundStyle(.secondary)
                     }.frame(height: 15)
                     .accessibilityElement(children: .combine)
                 }
@@ -226,16 +252,16 @@ struct ContentView: View {
             }
             Table(model.results, selection: $ui.selectedResult) {
                 TableColumn("#") { result in Text(String((model.results.firstIndex { $0.id == result.id } ?? 0)+1)).foregroundStyle(.secondary) }.width(26)
-                TableColumn("Language") { result in
-                    Text(result.language).fontWeight(.medium)
-                }.width(min: 95, ideal: 110)
-                TableColumn("Mean") { Text(TimeDisplay.format($0.meanNS)).monospacedDigit() }.width(min: 75, ideal: 85)
-                TableColumn("Median") { Text(TimeDisplay.format($0.medianNS)).monospacedDigit().foregroundStyle(accent) }.width(min: 75, ideal: 85)
-                TableColumn("Fastest") { Text(TimeDisplay.format($0.minimumNS)).monospacedDigit() }.width(min: 75, ideal: 85)
-                TableColumn("Slowest") { Text(TimeDisplay.format($0.maximumNS)).monospacedDigit() }.width(min: 75, ideal: 85)
+                TableColumn("Implementation") { result in
+                    Text(result.displayName).fontWeight(.medium)
+                }.width(min: 180, ideal: 240)
+                TableColumn("Mean") { Text($0.meanScoreDisplay).monospacedDigit() }.width(min: 75, ideal: 85)
+                TableColumn("Score") { Text($0.scoreDisplay).monospacedDigit().foregroundStyle(accent) }.width(min: 120, ideal: 135)
+                TableColumn("IQR") { Text($0.isThroughput ? String(format: "%.1f/s", $0.interquartileRange) : TimeDisplay.format($0.interquartileRange)).monospacedDigit() }.width(min: 75, ideal: 85)
+                TableColumn("Slowest") { Text($0.slowestScoreDisplay).monospacedDigit() }.width(min: 75, ideal: 85)
                 TableColumn("Relative") { result in
-                    if let first = model.results.first, first.medianNS > 0 {
-                        Text(String(format: "%.2f×", result.medianNS/first.medianNS)).monospacedDigit()
+                    if let first = model.results.first, first.score > 0, result.score > 0 {
+                        Text(String(format: "%.2f×", result.isThroughput ? first.score/result.score : result.score/first.score)).monospacedDigit()
                     } else { Text("—") }
                 }.width(70)
                 TableColumn("Final prime") { Text($0.signature.lastPrime.formatted()).monospacedDigit() }.width(min: 90, ideal: 110)
@@ -250,7 +276,7 @@ struct ContentView: View {
     private var footer: some View {
         HStack(alignment: .top) {
             Image(systemName: "info.circle").foregroundStyle(.secondary)
-            Text("Compares these implementations on this Mac. Runtimes and storage differ; small timing gaps may be noise. Language order is randomized per comparison.")
+            Text("Compares these implementations on this Mac. Runtimes and storage differ; small timing gaps may be noise. Implementation order is randomized each round.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 12)
             Text(BenchmarkSession.architecture).font(.caption.monospaced()).foregroundStyle(.secondary)
@@ -273,7 +299,7 @@ struct ContentView: View {
                         model.selectHistory(session); ui.showHistory = false
                     } label: {
                         VStack(alignment: .leading, spacing: 5) {
-                            Text("\(session.configuration.primeCount.formatted()) primes · \(session.results.count) languages")
+                            Text("\(session.configuration.workloadDescription) · \(session.results.count) implementations · contract v\(session.configuration.contractVersion)")
                             Text("\(session.date.formatted()) · \(session.configuration.mode.rawValue)\(session.completed ? "" : " · Partial")").font(.caption).foregroundStyle(.secondary)
                         }.padding(.vertical, 5)
                     }.buttonStyle(.plain)
@@ -337,24 +363,35 @@ struct ResultDetail: View {
     @StateObject private var ui = ContentState()
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text(result.language).font(.title2.weight(.semibold)); Spacer(); Button("Done") { dismiss() } }
+            HStack { Text(result.displayName).font(.title2.weight(.semibold)); Spacer(); Button("Done") { dismiss() } }
             ScrollView {
             VStack(alignment: .leading, spacing: 16) {
             Text(result.runtimeVersion).font(.callout).foregroundStyle(.secondary)
+            if let implementation = result.implementation {
+                Text(implementation.summary).font(.callout)
+                Text(implementation.explanation).font(.caption).foregroundStyle(.secondary)
+            }
+            Text(result.contract ?? "Legacy benchmark contract").font(.caption).textSelection(.enabled)
+            Text("Score: \(result.scoreDisplay) · IQR: \(result.isThroughput ? String(format: "%.1f passes/s", result.interquartileRange) : TimeDisplay.format(result.interquartileRange))").fontWeight(.semibold)
+            if let windows = result.windows {
+                ForEach(Array(windows.enumerated()), id: \.offset) { item in
+                    Text("Window \(item.offset + 1): \(item.element.passes) passes / \(TimeDisplay.format(item.element.elapsedNS)) · \(String(format: "%.1f", item.element.passesPerSecondPerThread)) passes/s/thread").font(.caption.monospaced())
+                }
+            }
             HStack(spacing: 28) {
                 VStack(alignment: .leading) { Text("Iterations").font(.caption); Text(String(result.samplesNS.count)).font(.title2) }
-                VStack(alignment: .leading) { Text("Mean").font(.caption); Text(TimeDisplay.format(result.meanNS)).font(.title2).foregroundStyle(accent) }
-                VStack(alignment: .leading) { Text("Median").font(.caption); Text(TimeDisplay.format(result.medianNS)).font(.title2).foregroundStyle(accent) }
+                VStack(alignment: .leading) { Text(result.isThroughput ? "Window mean" : "Mean").font(.caption); Text(TimeDisplay.format(result.meanNS)).font(.title2).foregroundStyle(accent) }
+                VStack(alignment: .leading) { Text("Median score").font(.caption); Text(result.scoreDisplay).font(.title2).foregroundStyle(accent) }
                 VStack(alignment: .leading) { Text("Compilation").font(.caption); Text(String(format: "%.3f s", result.compilationSeconds)).font(.title2) }
             }
             Text("Measured iterations · warm-ups excluded").fontWeight(.semibold)
-            Text("Mean is the average; median is the middle value after sorting. Rankings use median.").font(.caption).foregroundStyle(.secondary)
+            Text("Latency ranks median time; throughput ranks median passes/s. IQR is the middle 50% spread. Window duration is not per-sieve latency.").font(.caption).foregroundStyle(.secondary)
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), alignment: .leading)], alignment: .leading) {
                 ForEach(Array(result.samplesNS.enumerated()), id: \.offset) { sample in
                     Text("\(sample.offset + 1). \(TimeDisplay.format(sample.element))").font(.caption.monospaced()).textSelection(.enabled)
                 }
             }
-            if let language = Language.all.first(where: { $0.id == result.id }) {
+            if let language = Language.all.first(where: { $0.id == (result.implementation?.languageID ?? result.id) }) {
                 if !language.note.isEmpty { Text(language.note).font(.callout).foregroundStyle(.secondary) }
                 Button("Explore prime-calculation code") { ui.showCode = true }
             }

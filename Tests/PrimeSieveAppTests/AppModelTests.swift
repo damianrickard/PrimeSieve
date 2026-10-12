@@ -4,6 +4,49 @@ import PrimeSieveCore
 
 final class AppModelTests: XCTestCase {
     @MainActor
+    func testInvalidHiddenWorkloadInputDoesNotBlockVisibleInput() throws {
+        let model = AppModel()
+        model.mode = .calculation
+        model.workload = .firstN
+        model.primeCount = "100"
+        for hidden in ["", "typo", "0", "300000000"] {
+            model.upperLimit = hidden
+            let config = try XCTUnwrap(model.configuration)
+            try config.validate()
+            XCTAssertEqual(config.primeCount, 100)
+            XCTAssertEqual(config.upperLimit, 1_000_000)
+        }
+        model.workload = .upperLimit
+        model.upperLimit = "1,024"
+        for hidden in ["", "typo", "0", "300000000"] {
+            model.primeCount = hidden
+            let config = try XCTUnwrap(model.configuration)
+            try config.validate()
+            XCTAssertEqual(config.upperLimit, 1024)
+            XCTAssertEqual(config.primeCount, 100_000)
+        }
+        model.primeCount = "42"
+        XCTAssertEqual(model.configuration?.primeCount, 42)
+        model.workload = .firstN
+        XCTAssertEqual(model.configuration?.upperLimit, 1024)
+    }
+
+    @MainActor
+    func testInvalidVisibleInputNamesTheActiveField() {
+        let model = AppModel()
+        model.mode = .calculation
+        model.workload = .firstN
+        model.primeCount = ""
+        model.run()
+        XCTAssertEqual(model.errorMessage, "Enter a whole number for the prime count.")
+        model.workload = .upperLimit
+        model.upperLimit = "typo"
+        model.run()
+        XCTAssertEqual(model.errorMessage, "Enter a whole number for the inclusive upper limit.")
+        XCTAssertFalse(model.isRunning)
+    }
+
+    @MainActor
     func testClearHistoryPreservesVisibleResultAndBlocksDuringRun() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: directory) }

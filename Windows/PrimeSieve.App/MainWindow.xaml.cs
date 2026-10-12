@@ -6,6 +6,7 @@ using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -71,9 +72,9 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         {
             var preferences = store.LoadRuntimePreferences();
             overrides = preferences.Paths;
-            preferencesWarning = string.Join("\n", preferences.Warnings); Notify(nameof(PreferencesWarning));
+            preferencesWarning = string.Join("\n", preferences.Warnings.Concat(SieveImplementation.RegistryError is {} registryError ? new[] { registryError } : Array.Empty<string>())); Notify(nameof(PreferencesWarning));
             LoadHistory();
-            CodeLanguage.ItemsSource = PrimeSieve.Core.Language.All; SetupLanguage.ItemsSource = PrimeSieve.Core.Language.All;
+            CodeLanguage.ItemsSource = SieveImplementation.All; SetupLanguage.ItemsSource = PrimeSieve.Core.Language.All;
             CodeLanguage.SelectedIndex = 0; SetupLanguage.SelectedIndex = 0;
             await DiscoverAsync();
             if (closeAfterDiscovery) return;
@@ -110,13 +111,26 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void SelectAll(object sender, RoutedEventArgs e) { foreach (var language in Languages) language.Selected = language.Status.Available; }
     private void SelectNone(object sender, RoutedEventArgs e) { foreach (var language in Languages) language.Selected = false; }
     private void PresetClicked(object sender, RoutedEventArgs e) => PrimeCountBox.Text = ((Button)sender).Tag.ToString();
-    private void ModeChanged(object sender, SelectionChangedEventArgs e) { if (WarmupsBox != null) WarmupsBox.IsEnabled = ModeBox.SelectedIndex == 0; }
+    private void ModeChanged(object sender, SelectionChangedEventArgs e) { if (WarmupsBox != null) WarmupsBox.IsEnabled = ModeBox.SelectedIndex != 1; }
+    private void StorageChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ResultsGrid == null) return;
+        CollectionViewSource.GetDefaultView(Results).Filter = item => item is BenchmarkResult r &&
+            (StorageFilter.SelectedIndex == 0 || r.Implementation?.Bits == (StorageFilter.SelectedIndex == 1 ? 8 : 1));
+    }
+    private void DragRaceClicked(object sender, RoutedEventArgs e)
+    {
+        WorkloadBox.SelectedIndex = 1; VariantBox.SelectedIndex = 1; ModeBox.SelectedIndex = 2;
+        PrimeCountBox.Text = "1000000"; IterationsBox.Text = "1"; WarmupsBox.Text = "3"; RoundsBox.Text = "3"; SecondsBox.Text = "5";
+        foreach (var language in Languages) language.Selected = language.Status.Available && SieveImplementation.All.Any(i => i.LanguageID == language.Status.Language.Id && i.SupportsThroughput);
+    }
     private BenchmarkConfiguration ReadConfiguration()
     {
         if (!int.TryParse(PrimeCountBox.Text, NumberStyles.AllowThousands, CultureInfo.CurrentCulture, out var count) ||
             !int.TryParse(IterationsBox.Text, out var runs) || !int.TryParse(WarmupsBox.Text, out var warm) ||
-            !double.TryParse(TimeoutBox.Text, out var timeout)) throw new ArgumentException("Enter valid numbers for the workload and timing settings.");
-        var config = new BenchmarkConfiguration(count, runs, ModeBox.SelectedIndex == 1 ? 0 : warm, timeout, ModeBox.SelectedIndex == 0 ? TimingMode.Calculation : TimingMode.Startup);
+            !double.TryParse(TimeoutBox.Text, out var timeout) || !int.TryParse(RoundsBox.Text, out var rounds) || !double.TryParse(SecondsBox.Text, out var seconds)) throw new ArgumentException("Enter valid numbers for the workload and timing settings.");
+        var config = new BenchmarkConfiguration(WorkloadBox.SelectedIndex == 0 ? count : 100000, runs, ModeBox.SelectedIndex == 1 ? 0 : warm, timeout, (TimingMode)ModeBox.SelectedIndex,
+            (Workload)WorkloadBox.SelectedIndex, WorkloadBox.SelectedIndex == 1 ? count : 1000000, seconds, rounds, (ImplementationSelection)VariantBox.SelectedIndex);
         config.Validate(); return config;
     }
     private async void StartClicked(object sender, RoutedEventArgs e) { try { await RunComparisonAsync(); } catch (Exception error) { ShowError(error); } }
@@ -127,15 +141,18 @@ public partial class MainWindow : Window, INotifyPropertyChanged
         var selected = Languages.Where(l => l.Selected && l.Status.Available).Select(l => l.Status).ToArray();
         if (selected.Length == 0) throw new ArgumentException("Select at least one detected language.");
         busy = true; cancellation = new(); session = null; Results.Clear(); ProgressValue = 0;
-        ResultHeading = $"{config.PrimeCount:N0} primes • {config.Repetitions} iterations";
-        ResultNotes = config.Mode == TimingMode.Calculation ? "Calculation only. Warm-ups excluded; each completed result is independently verified." : "Startup + calculation. Fresh processes; no warm-ups. Compilation excluded.";
+        ResultHeading = $"{config.WorkloadDescription} • {config.Rounds} rounds";
+        ResultNotes = config.MeasurementContract + (config.TimeoutGuidance is {} guidance ? "\n" + guidance : "");
         MainTabs.SelectedIndex = 0; RefreshState();
         var receivingProgress = true;
         var progress = new Progress<BenchmarkEvent>(update =>
         {
             if (!receivingProgress) return;
             StatusText = update.Message; ProgressValue = 100.0 * update.Finished / Math.Max(1, update.Total);
-            if (update.Result != null) AddResult(update.Result);
+            if (update.CompletedRoundResults is {} completedRound)
+            {
+                Results.Clear(); foreach (var result in completedRound) AddResult(result);
+            }
             RefreshState();
         });
         try
@@ -143,7 +160,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             session = await BenchmarkRunner.RunAsync(selected, config, new Dictionary<string, string>(overrides), progress, cancellation.Token);
             receivingProgress = false;
             Results.Clear(); foreach (var result in session.Results) Results.Add(result);
-            StatusText = session.Cancelled ? "Cancelled. Completed results were kept." : $"Comparison complete • {session.Results.Count} verified • {session.Failures.Count} failed";
+            StatusText = session.Cancelled ? "Cancelled. Only completed rounds were kept." : $"Comparison complete • {session.Results.Count} verified • {session.Failures.Count} failed";
             ResultNotes += session.Failures.Count == 0 ? "" : "\n" + string.Join("\n", session.Failures.Select(f => f.Key + ": " + f.Value));
             try { store.Save(session); LoadHistory(); }
             catch (Exception error) { StatusText += " • History could not be saved: " + error.Message; }
@@ -152,7 +169,8 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     }
     private void AddResult(BenchmarkResult result)
     {
-        var index = 0; while (index < Results.Count && Results[index].MedianNS <= result.MedianNS) index++;
+        var old = Results.FirstOrDefault(r => r.Id == result.Id); if (old != null) Results.Remove(old);
+        var index = 0; while (index < Results.Count && BenchmarkResult.Compare(Results[index], result) <= 0) index++;
         Results.Insert(index, result);
     }
     private void CancelClicked(object sender, RoutedEventArgs e) { cancellation?.Cancel(); StatusText = "Cancelling worker…"; RefreshState(); }
@@ -178,11 +196,12 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void OpenHistory(object sender, RoutedEventArgs e)
     {
         if (busy || HistoryList.SelectedItem is not BenchmarkSession saved) return;
-        PrimeCountBox.Text = saved.Configuration.PrimeCount.ToString(); IterationsBox.Text = saved.Configuration.Repetitions.ToString();
+        PrimeCountBox.Text = (saved.Configuration.Workload == Workload.FirstN ? saved.Configuration.PrimeCount : saved.Configuration.UpperLimit).ToString(); IterationsBox.Text = saved.Configuration.Repetitions.ToString();
         WarmupsBox.Text = saved.Configuration.Warmups.ToString(); TimeoutBox.Text = saved.Configuration.TimeoutSeconds.ToString(CultureInfo.CurrentCulture);
-        ModeBox.SelectedIndex = saved.Configuration.Mode == TimingMode.Calculation ? 0 : 1;
-        session = saved; Results.Clear(); foreach (var result in saved.Results.OrderBy(r => r.MedianNS)) Results.Add(result);
-        ResultHeading = $"{saved.Configuration.PrimeCount:N0} primes • {saved.Configuration.Repetitions} iterations";
+        ModeBox.SelectedIndex = (int)saved.Configuration.Mode; WorkloadBox.SelectedIndex = (int)saved.Configuration.Workload; VariantBox.SelectedIndex = (int)saved.Configuration.Implementations;
+        RoundsBox.Text = saved.Configuration.Rounds.ToString(); SecondsBox.Text = saved.Configuration.DurationSeconds.ToString(CultureInfo.CurrentCulture);
+        session = saved; Results.Clear(); foreach (var result in saved.Results.Order(Comparer<BenchmarkResult>.Create(BenchmarkResult.Compare))) Results.Add(result);
+        ResultHeading = $"{saved.Configuration.WorkloadDescription} • contract v{saved.Configuration.ContractVersion}";
         ResultNotes = $"{saved.Date:g} • {saved.Configuration.Mode} • {saved.Machine}" + (saved.Cancelled ? " • Cancelled" : "") + "\n" + string.Join("\n", saved.Failures.Select(f => f.Key + ": " + f.Value));
         MainTabs.SelectedIndex = 0; StatusText = "Opened saved comparison."; RefreshState();
     }
@@ -208,21 +227,22 @@ public partial class MainWindow : Window, INotifyPropertyChanged
     private void ShowResultDetails()
     {
         if (ResultsGrid.SelectedItem is not BenchmarkResult result) return;
-        var language = PrimeSieve.Core.Language.All.FirstOrDefault(l => l.Id == result.Id);
+        var implementation = SieveImplementation.All.FirstOrDefault(i => i.Id == result.Id);
+        var language = implementation?.Language;
         var note = language?.Note ?? "Calculation code for this language is not available in this version. Saved measurements are shown above.";
-        var details = $"{result.Language}\n{result.RuntimeVersion}\n{result.ExecutablePath}\n\nMedian: {result.MedianDisplay}    Mean: {result.MeanDisplay}\n{result.Iterations} iterations • {result.RangeDisplay}\nSamples: {string.Join(", ", result.SamplesNS.Select(TimeDisplay.Format))}\nPreparation: {result.CompilationSeconds:F3} s\nLast prime: {result.Signature.LastPrime:N0}    Checksum: {result.Signature.Checksum}\n\nSource SHA-256 (manifest v{result.SourceHashFormat}):\n{result.SourceHash}\n\nBuild:\n{JsonSerializer.Serialize(result.Command)}\n\nLaunch:\n{JsonSerializer.Serialize(result.LaunchCommand)}\n\nHelpers:\n{JsonSerializer.Serialize(result.HelperTools, JsonDefaults.Options)}\n\n{note}";
+        var details = $"{result.DisplayName}\n{result.Implementation?.Summary}\n{result.Implementation?.Explanation}\n{result.Contract}\nScore: {result.ScoreDisplay}    IQR: {result.SpreadDisplay}\nWindows (passes, elapsed, threads, rates): {JsonSerializer.Serialize(result.Windows, JsonDefaults.Options)}\n\n{result.RuntimeVersion}\n{result.ExecutablePath}\n\nMedian: {result.MedianDisplay}    Mean: {result.MeanDisplay}\n{result.Iterations} iterations • {result.RangeDisplay}\nSamples: {string.Join(", ", result.SamplesNS.Select(TimeDisplay.Format))}\nPreparation: {result.CompilationSeconds:F3} s\nLast prime: {result.Signature.LastPrime:N0}    Checksum: {result.Signature.Checksum}\n\nSource SHA-256 (manifest v{result.SourceHashFormat}):\n{result.SourceHash}\n\nBuild:\n{JsonSerializer.Serialize(result.Command)}\n\nLaunch:\n{JsonSerializer.Serialize(result.LaunchCommand)}\n\nHelpers:\n{JsonSerializer.Serialize(result.HelperTools, JsonDefaults.Options)}\n\n{note}";
         var panel = new DockPanel { Margin = new Thickness(20) };
         var code = new Button { Content = "Open calculation code", IsEnabled = language != null, HorizontalAlignment = HorizontalAlignment.Left, Margin = new Thickness(0, 14, 0, 0) };
         DockPanel.SetDock(code, Dock.Bottom); panel.Children.Add(code);
         panel.Children.Add(new TextBox { Text = details, IsReadOnly = true, TextWrapping = TextWrapping.Wrap, VerticalScrollBarVisibility = ScrollBarVisibility.Auto });
         var window = new Window { Owner = this, Title = result.Language + " — result details", Width = 760, Height = 620, Content = panel, WindowStartupLocation = WindowStartupLocation.CenterOwner };
-        code.Click += (_, _) => { if (language == null) return; CodeLanguage.SelectedItem = language; MainTabs.SelectedIndex = 1; window.Close(); };
+        code.Click += (_, _) => { if (language == null) return; CodeLanguage.SelectedItem = ((SieveImplementation[])CodeLanguage.ItemsSource).First(i => i.Id == implementation!.Id); MainTabs.SelectedIndex = 1; window.Close(); };
         window.ShowDialog();
     }
     private void CodeSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (CodeLanguage.SelectedItem is not Language language || CodeText == null) return;
-        try { CodeText.Text = string.Join("\n\n", WorkerSources.Sections(language).Select(s => $"── {s.Title} · line {s.SourceLine} ──\n{s.Code}")); }
+        if (CodeLanguage.SelectedItem is not SieveImplementation implementation || CodeText == null) return;
+        try { CodeSummary.Text = implementation.Summary + "\n" + implementation.Explanation; CodeText.Text = string.Join("\n\n", WorkerSources.Sections(implementation).Select(s => $"── {s.Title} · line {s.SourceLine} ──\n{s.Code}")); }
         catch (Exception error) { CodeText.Text = error.Message; }
     }
     private void SmallerCode(object sender, RoutedEventArgs e) => CodeText.FontSize = Math.Max(10, CodeText.FontSize - 1);
@@ -278,6 +298,14 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             SessionStore.ExportJson(session, Path.Combine(outputDirectory, "ui-startup-results.json"));
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             Capture(Path.Combine(outputDirectory, "results.png"));
+            DragRaceClicked(this, new RoutedEventArgs());
+            PrimeCountBox.Text = "1024"; SecondsBox.Text = "0.05"; RoundsBox.Text = "2";
+            await RunComparisonAsync();
+            if (session == null || session.Configuration.Mode != TimingMode.Throughput || session.Results.Count == 0 || session.Failures.Count != 0 || session.Results.Any(r => !r.IsThroughput || r.Windows?.Length != 2))
+                throw new InvalidOperationException("UI throughput benchmark failed: " + ResultNotes);
+            SessionStore.ExportJson(session, Path.Combine(outputDirectory, "ui-throughput-results.json"));
+            await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Capture(Path.Combine(outputDirectory, "throughput.png"));
             HistoryList.SelectedItem = History.First(s => s.Id == session.Id);
             OpenHistory(this, new RoutedEventArgs());
             if (Results.Count != session.Results.Count) throw new InvalidOperationException("History reopen failed.");
@@ -286,7 +314,7 @@ public partial class MainWindow : Window, INotifyPropertyChanged
             try { _ = ReadConfiguration(); } catch (ArgumentException) { invalidRejected = true; }
             if (!invalidRejected) throw new InvalidOperationException("UI accepted an invalid workload.");
             PrimeCountBox.Text = "10000";
-            CodeLanguage.SelectedItem = PrimeSieve.Core.Language.All.First(l => l.Id == "csharp"); MainTabs.SelectedIndex = 1;
+            CodeLanguage.SelectedItem = ((SieveImplementation[])CodeLanguage.ItemsSource).First(l => l.Id == "csharp"); MainTabs.SelectedIndex = 1;
             await Dispatcher.InvokeAsync(() => { }, System.Windows.Threading.DispatcherPriority.ApplicationIdle);
             if (!CodeText.Text.Contains("new byte")) throw new InvalidOperationException("Code explorer failed.");
             Capture(Path.Combine(outputDirectory, "code.png"));

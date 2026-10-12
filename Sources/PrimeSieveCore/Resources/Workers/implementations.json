@@ -1,0 +1,162 @@
+[
+  {
+    "id": "python-bulk",
+    "languageID": "python",
+    "name": "Bulk bytearray",
+    "source": "tuned.py",
+    "variant": "bulk",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 8,
+    "storage": "Byte flags",
+    "dependencies": "No external sieve library",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "Bulk strided assignment marks composites; built-in searching scans candidates.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  },
+  {
+    "id": "r-bulk",
+    "languageID": "r",
+    "name": "Bulk raw vector",
+    "source": "tuned.R",
+    "variant": "bulk",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 8,
+    "storage": "Byte flags",
+    "dependencies": "C monotonic-clock bridge; no external sieve library",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "Marks multiples using vector subassignment; raw flags retain one byte per candidate.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  },
+  {
+    "id": "swift-byte",
+    "languageID": "swift",
+    "name": "Byte buffer",
+    "source": "tuned.swift",
+    "variant": "byte",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 8,
+    "storage": "Byte flags",
+    "dependencies": "No external sieve library",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "Unsafe buffer with explicit bounds established from the validated limit.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  },
+  {
+    "id": "swift-packed",
+    "languageID": "swift",
+    "name": "Packed bits",
+    "source": "tuned.swift",
+    "variant": "packed",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 1,
+    "storage": "Packed bits",
+    "dependencies": "No external sieve library",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "Eight candidates per byte; individual bit marking.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  },
+  {
+    "id": "swift-striped",
+    "languageID": "swift",
+    "name": "Striped bits",
+    "source": "tuned.swift",
+    "variant": "striped",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 1,
+    "storage": "Packed bits",
+    "dependencies": "No external sieve library",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "Eight bit planes share bytes; groups of eight marks advance within each plane.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  },
+  {
+    "id": "fortran-byte",
+    "languageID": "fortran",
+    "name": "Byte array",
+    "source": "tuned.f90",
+    "variant": "byte",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 8,
+    "storage": "Byte flags",
+    "dependencies": "No external sieve library",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "Contiguous odd-only byte flags.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  },
+  {
+    "id": "fortran-packed",
+    "languageID": "fortran",
+    "name": "Packed bits",
+    "source": "tuned.f90",
+    "variant": "packed",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 1,
+    "storage": "Packed bits",
+    "dependencies": "No external sieve library",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "Packed integer bit operations; measured alternative, not an assumed speedup.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  },
+  {
+    "id": "assembly-branchless",
+    "languageID": "assembly",
+    "name": "Assembly kernel with C harness \u00b7 conditional scan",
+    "source": "tuned_assembly.c",
+    "variant": "branchless",
+    "algorithm": "Odd-only Eratosthenes",
+    "bits": 8,
+    "storage": "Byte flags",
+    "dependencies": "C allocation/timing/output harness",
+    "allocation": "Fresh storage per pass; final measured sieve retained for verification",
+    "threadModel": "Single sieve thread",
+    "architectures": [
+      "arm64",
+      "x86_64"
+    ],
+    "explanation": "ARM64 conditional increment and x86-64 setcc + add replace the candidate-dependent scan branch. C owns allocation, timing, and verification.",
+    "protocolVersion": 3,
+    "provenance": "PrimeSieve original implementation; no imported upstream source; exact source hash recorded"
+  }
+]

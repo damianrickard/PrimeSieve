@@ -8,17 +8,18 @@ public static class ProcessExecutor
 {
     public static Task<ProcessOutput> RunAsync(string executable, IEnumerable<string> arguments,
         string? directory = null, double timeoutSeconds = 120, CancellationToken cancellationToken = default,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null, int maxOutputCharacters = 1_048_576)
     {
+        if (maxOutputCharacters is < 1 or > 8_388_608) throw new ArgumentOutOfRangeException(nameof(maxOutputCharacters));
         var args = arguments.ToArray();
         var variables = environment == null ? null : new Dictionary<string, string>(environment);
         // Start the stopwatch and perform every process/I/O operation away from UI dispatch.
-        return Task.Run(() => ExecuteAsync(executable, args, directory, timeoutSeconds, cancellationToken, variables));
+        return Task.Run(() => ExecuteAsync(executable, args, directory, timeoutSeconds, cancellationToken, variables, maxOutputCharacters));
     }
 
     private static async Task<ProcessOutput> ExecuteAsync(string executable, IEnumerable<string> arguments,
         string? directory = null, double timeoutSeconds = 120, CancellationToken cancellationToken = default,
-        IReadOnlyDictionary<string, string>? environment = null)
+        IReadOnlyDictionary<string, string>? environment = null, int maxOutputCharacters = 1_048_576)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var args = arguments.ToArray();
@@ -58,7 +59,7 @@ public static class ProcessExecutor
             catch (System.ComponentModel.Win32Exception) { } // Cleanup below retries and surfaces failures.
         });
         // Cap each stream while continuing to drain it, avoiding unbounded compiler output.
-        static async Task<(string Text, bool Truncated)> ReadAsync(StreamReader reader, CancellationToken token)
+        static async Task<(string Text, bool Truncated)> ReadAsync(StreamReader reader, CancellationToken token, int limit)
         {
             var text = new StringBuilder();
             var buffer = new char[4096];
@@ -66,21 +67,21 @@ public static class ProcessExecutor
             int read;
             while ((read = await reader.ReadAsync(buffer.AsMemory(), token)) > 0)
             {
-                var keep = Math.Min(read, Math.Max(0, 1_048_576 - text.Length));
+                var keep = Math.Min(read, Math.Max(0, limit - text.Length));
                 text.Append(buffer, 0, keep);
                 truncated |= keep < read;
             }
             return (text.ToString(), truncated);
         }
-        var stdout = ReadAsync(worker.StandardOutput, linked.Token);
-        var stderr = ReadAsync(worker.StandardError, linked.Token);
+        var stdout = ReadAsync(worker.StandardOutput, linked.Token, maxOutputCharacters);
+        var stderr = ReadAsync(worker.StandardError, linked.Token, 1_048_576);
         try
         {
             await process.WaitForExitAsync(linked.Token);
             var output = await stdout;
             var error = await stderr;
             var elapsed = Stopwatch.GetElapsedTime(started).TotalNanoseconds;
-            if (output.Truncated || error.Truncated) throw new IOException("Worker output exceeded the 1 MiB limit.");
+            if (output.Truncated || error.Truncated) throw new IOException("Worker output exceeded its configured capture limit.");
             if (process.ExitCode != 0) throw new IOException($"{Path.GetFileName(executable)} exited with code {process.ExitCode}: {(error.Text + "\n" + output.Text)[..Math.Min(3000, error.Text.Length + output.Text.Length + 1)]}");
             return new(output.Text, error.Text, elapsed);
         }

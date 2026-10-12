@@ -18,10 +18,15 @@ public sealed class SessionStore(string? root = null)
             if (!Guid.TryParse(Path.GetFileNameWithoutExtension(path), out _)) continue;
             try
             {
-                var session = JsonSerializer.Deserialize<BenchmarkSession>(File.ReadAllText(path), JsonDefaults.Options)
+                var text = File.ReadAllText(path);
+                var session = JsonSerializer.Deserialize<BenchmarkSession>(text, JsonDefaults.Options)
                     ?? throw new InvalidDataException("Empty session.");
+                using var document = JsonDocument.Parse(text);
+                if (!document.RootElement.TryGetProperty("configuration", out var configuration) || configuration.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Missing configuration.");
+                if (!configuration.TryGetProperty("contractVersion", out _))
+                    session.Configuration = session.Configuration with { ContractVersion = 1 };
                 session.Configuration.Validate();
-                if (session.Results == null || session.Failures == null || session.Results.Any(r => r.SamplesNS == null || r.SamplesNS.Length == 0 || r.SamplesNS.Any(v => !double.IsFinite(v) || v < 0)))
+                if (session.Results == null || session.Failures == null || session.Results.Any(r => r.Signature == null || (r.Windows?.Any(w => w.Passes <= 0 || !double.IsFinite(w.ElapsedNS) || w.ElapsedNS <= 0 || w.Threads <= 0) ?? false) || r.SamplesNS == null || r.SamplesNS.Length == 0 || r.SamplesNS.Any(v => !double.IsFinite(v) || v < 0)))
                     throw new InvalidDataException("Invalid saved measurements.");
                 sessions.Add(session);
             }
@@ -75,15 +80,18 @@ public sealed class SessionStore(string? root = null)
             return "\"" + text.Replace("\"", "\"\"") + "\"";
         }
         static string Number(double value) => value.ToString("R", CultureInfo.InvariantCulture);
-        var csv = new StringBuilder("language,prime_count,mode,iterations,warmups,median_ns,mean_ns,min_ns,max_ns,samples_ns,last_prime,checksum,compilation_seconds,runtime,executable,source_sha256,source_hash_format,source_files,build_command,launch_command,helper_tools,machine,session_id,date,completed,cancelled\r\n");
+        var csv = new StringBuilder("language,prime_count,mode,iterations,warmups,median_ns,mean_ns,min_ns,max_ns,samples_ns,last_prime,checksum,compilation_seconds,runtime,executable,source_sha256,source_hash_format,source_files,build_command,launch_command,helper_tools,machine,session_id,date,completed,cancelled,implementation_id,implementation_name,workload,upper_limit,contract_version,contract,rounds,round_order,score,score_unit,iqr,windows,machine_details\r\n");
         foreach (var result in session.Results)
         {
-            string[] values = [result.Language, session.Configuration.PrimeCount.ToString(), session.Configuration.Mode.ToString(), result.Iterations.ToString(),
+            string[] values = [result.Language, result.Signature.Count.ToString(), session.Configuration.Mode.ToString(), result.Iterations.ToString(),
                 (session.Configuration.Mode == TimingMode.Startup ? 0 : session.Configuration.Warmups).ToString(), Number(result.MedianNS), Number(result.MeanNS),
                 Number(result.MinimumNS), Number(result.MaximumNS), string.Join(';', result.SamplesNS.Select(Number)), result.Signature.LastPrime.ToString(),
                 result.Signature.Checksum.ToString(), Number(result.CompilationSeconds), result.RuntimeVersion, result.ExecutablePath, result.SourceHash,
                 result.SourceHashFormat.ToString(), string.Join(';', result.SourceFiles), JsonSerializer.Serialize(result.Command), JsonSerializer.Serialize(result.LaunchCommand),
-                JsonSerializer.Serialize(result.HelperTools), session.Machine, session.Id.ToString(), session.Date.ToString("O"), session.Completed.ToString(), session.Cancelled.ToString()];
+                JsonSerializer.Serialize(result.HelperTools), session.Machine, session.Id.ToString(), session.Date.ToString("O"), session.Completed.ToString(), session.Cancelled.ToString(), result.Id, result.Implementation?.Name ?? "Legacy implementation", session.Configuration.Workload.ToString(),
+                session.Configuration.SieveLimit.ToString(), session.Configuration.ContractVersion.ToString(), result.Contract ?? "Legacy contract",
+                session.Configuration.Rounds.ToString(), JsonSerializer.Serialize(result.RoundOrders), Number(result.Score), result.IsThroughput ? "passes/second" : "nanoseconds",
+                Number(result.InterquartileRange), JsonSerializer.Serialize(result.Windows), JsonSerializer.Serialize(session.MachineDetails)];
             csv.AppendLine(string.Join(',', values.Select(Cell)));
         }
         AtomicWrite(path, csv.ToString());
