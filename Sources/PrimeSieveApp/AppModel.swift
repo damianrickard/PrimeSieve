@@ -17,15 +17,19 @@ final class AppModel: ObservableObject {
     @Published var progress = 0.0
     @Published var status = "Checking installed languages…"
     @Published var session: BenchmarkSession?
-    @Published var history: [BenchmarkSession] = SessionStore.load()
+    @Published var history: [BenchmarkSession] = []
     @Published var errorMessage: String?
     @Published var overrides = UserDefaults.standard.dictionary(forKey: "runtimePaths") as? [String: String] ?? [:]
 
     private let discover: @Sendable ([String: String]) async -> [RuntimeStatus]
     private var needsRefresh = false
+    private let historyDirectory: URL
 
-    init(discover: @escaping @Sendable ([String: String]) async -> [RuntimeStatus] = { await RuntimeDiscovery.discover(overrides: $0) }) {
+    init(discover: @escaping @Sendable ([String: String]) async -> [RuntimeStatus] = { await RuntimeDiscovery.discover(overrides: $0) },
+         historyDirectory: URL = SessionStore.directory) {
         self.discover = discover
+        self.historyDirectory = historyDirectory
+        history = SessionStore.load(directory: historyDirectory)
         let defaults = UserDefaults.standard
         if let ids = defaults.stringArray(forKey: "selectedLanguages") { selected = Set(ids) }
         if let data = defaults.data(forKey: "configuration"),
@@ -125,8 +129,15 @@ final class AppModel: ObservableObject {
     }
     private func save() {
         guard let session, !session.results.isEmpty || !session.failures.isEmpty else { return }
-        do { try SessionStore.save(session); history = SessionStore.load() }
+        do { try SessionStore.save(session, directory: historyDirectory); history = SessionStore.load(directory: historyDirectory) }
         catch { errorMessage = "The results are available, but history could not be saved: \(error.localizedDescription)" }
+    }
+    /// Keep the visible result available for export, and refresh the list even after partial failure.
+    func clearHistory() -> String? {
+        guard !isRunning else { return "Stop the current comparison before clearing history." }
+        defer { history = SessionStore.load(directory: historyDirectory) }
+        do { try SessionStore.clear(directory: historyDirectory); return nil }
+        catch { return "History could not be fully cleared: \(error.localizedDescription)" }
     }
     func selectHistory(_ value: BenchmarkSession) {
         guard !isRunning else { return }

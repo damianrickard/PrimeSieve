@@ -4,6 +4,34 @@ import PrimeSieveCore
 
 final class AppModelTests: XCTestCase {
     @MainActor
+    func testClearHistoryPreservesVisibleResultAndBlocksDuringRun() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let session = BenchmarkSession(configuration: .init())
+        try SessionStore.save(session, directory: directory)
+        let model = AppModel(historyDirectory: directory)
+        model.selectHistory(session)
+        model.isRunning = true
+        XCTAssertNotNil(model.clearHistory())
+        XCTAssertEqual(SessionStore.load(directory: directory).count, 1)
+        model.isRunning = false
+        XCTAssertNil(model.clearHistory())
+        XCTAssertTrue(model.history.isEmpty)
+        XCTAssertTrue(SessionStore.load(directory: directory).isEmpty)
+        XCTAssertEqual(model.session?.id, session.id)
+        XCTAssertEqual(model.primeCount, String(session.configuration.primeCount))
+    }
+
+    @MainActor
+    func testClearHistoryReportsFailure() throws {
+        let path = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: path) }
+        try Data("not a directory".utf8).write(to: path)
+        let model = AppModel(historyDirectory: path)
+        XCTAssertTrue(model.clearHistory()?.contains("could not be fully cleared") ?? false)
+    }
+
+    @MainActor
     func testRuntimeChangeDuringDiscoveryQueuesLatestSelection() async throws {
         let gate = DiscoveryGate()
         let model = AppModel(discover: { paths in await gate.discover(paths) })

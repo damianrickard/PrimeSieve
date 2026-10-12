@@ -4,6 +4,14 @@ Validated on Damian's Apple Silicon Mac on October 11, 2026.
 
 This summary is published with the source. The named raw logs and benchmark exports are retained locally and excluded from Git because they contain machine names and local paths. To reproduce the checks, follow the build and test instructions in the project README and set `PRIMESIEVE_REQUIRE_ALL=1` to require all 35 languages.
 
+## Clear History option
+
+- `history-tests.log`: six focused tests passed. Temporary histories cover deleting saved and corrupt JSON, repeated clearing, saving afterward, preserving exported files and nested folders, removing symlinks without deleting their targets, failure reporting, and blocking deletion during a run. App-model checks confirm the visible result is retained.
+- The rebuilt app's History window and confirmation were checked through the UI; Cancel returned to the saved list. All eight existing user sessions were verified byte-for-byte unchanged. Actual deletion was exercised only against temporary test histories.
+- `history-build.log`: release build succeeded; strict code-signature verification passed. No worker algorithms changed in this update.
+- Claude Opus 5.5 independently reviewed the Clear History changes and reported no actionable defects; that review did not execute tests.
+- Installed in `/Applications/PrimeSieve.app`. Installed file contents and permissions match the release bundle, strict signature verification passed, and the running process was confirmed to use the installed path. The installed UI shows Clear History, retains the eight existing sessions, and detects all 35 runtimes.
+
 ## Approved QA remediation
 
 All seven accepted findings from Claude's two Opus reviews were addressed: consistent runtime discovery, helper overrides and provenance, queued runtime refresh, per-language source manifests, .NET 6 build arguments, primitive Clojure loops, and ahead-of-time Guile compilation.

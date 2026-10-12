@@ -30,6 +30,7 @@ swift build --build-system native --product primesieve-cli
 4. Start the comparison. Verified results appear in ascending median-time order as workers finish. Cancellation keeps completed results.
 5. Open a language's result for its iteration count, mean, median, individual measurements, and compiler settings. Export CSV or JSON, or reopen a saved comparison from History.
 6. Open **Code explorer** to browse the documented prime-calculation sections for all 35 languages. The explorer reads excerpts directly from the bundled worker sources and hides timing, command-line parsing, checksum verification, and output. It works without installing a runtime. Assembly includes both ARM64 and x86-64 kernels. Result details also open the explorer at the selected language.
+7. Choose **History → Clear History…** to delete saved comparisons after confirmation. Results currently on screen and exported files are kept. Clearing is disabled during a comparison and when history is empty.
 
 Each worker documents allocation, composite marking, and scanning to the Nth prime. Horizontal scrolling preserves code indentation; text size and Copy code are available in the explorer. These are excerpts within the worker's surrounding scope, rather than standalone programs. The interface uses international orange (`#FF4F00`).
 

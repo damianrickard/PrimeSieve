@@ -5,16 +5,30 @@ public enum SessionStore {
         FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PrimeSieve/Sessions")
     }
-    public static func save(_ session: BenchmarkSession) throws {
+    public static func save(_ session: BenchmarkSession, directory: URL = SessionStore.directory) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try json(session).write(to: directory.appendingPathComponent("\(session.id).json"), options: .atomic)
     }
-    public static func load() -> [BenchmarkSession] {
+    public static func load(directory: URL = SessionStore.directory) -> [BenchmarkSession] {
         let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
         return files.filter { $0.pathExtension == "json" }.compactMap { url in
             guard let data = try? Data(contentsOf: url) else { return nil }
             return try? JSONDecoder().decode(BenchmarkSession.self, from: data)
         }.sorted { $0.date > $1.date }
+    }
+
+    /// Remove saved JSON files only. Preserve the folder, unrelated files, and nested directories.
+    public static func clear(directory: URL = SessionStore.directory) throws {
+        guard FileManager.default.fileExists(atPath: directory.path) else { return }
+        let files = try FileManager.default.contentsOfDirectory(at: directory,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        for file in files where file.pathExtension == "json" {
+            let values = try file.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values.isRegularFile == true || values.isSymbolicLink == true {
+                // Removing a symlink removes the link itself, never its external target.
+                try FileManager.default.removeItem(at: file)
+            }
+        }
     }
     public static func json(_ session: BenchmarkSession) throws -> Data {
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

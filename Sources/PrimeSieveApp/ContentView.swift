@@ -6,6 +6,8 @@ private final class ContentState: ObservableObject {
     @Published var search = ""
     @Published var showSetup = false
     @Published var showHistory = false
+    @Published var confirmClearHistory = false
+    @Published var historyError: String?
     @Published var detail: BenchmarkResult?
     @Published var selectedResult: String?
     @Published var showCode = false
@@ -257,7 +259,13 @@ struct ContentView: View {
 
     private var history: some View {
         VStack(alignment: .leading, spacing: 16) {
-            HStack { Text("Saved comparisons").font(.title2.weight(.semibold)); Spacer(); Button("Done") { ui.showHistory = false } }
+            HStack {
+                Text("Saved comparisons").font(.title2.weight(.semibold))
+                Spacer()
+                Button("Clear History…", role: .destructive) { ui.confirmClearHistory = true }
+                    .disabled(model.history.isEmpty || model.isRunning)
+                Button("Done") { ui.showHistory = false }
+            }
             if model.history.isEmpty { Text("Completed comparisons will appear here.").foregroundStyle(.secondary).padding(.vertical, 50) }
             else {
                 List(model.history) { session in
@@ -272,6 +280,15 @@ struct ContentView: View {
                 }
             }
         }.padding(24).frame(width: 620, height: 420)
+        .alert("Clear all saved comparisons?", isPresented: $ui.confirmClearHistory) {
+            Button("Cancel", role: .cancel) { }
+            Button("Clear History", role: .destructive) { ui.historyError = model.clearHistory() }
+        } message: {
+            Text("This permanently deletes your saved comparison history. Results currently on screen and exported files are kept.")
+        }
+        .alert("Couldn’t clear history", isPresented: Binding(get: { ui.historyError != nil }, set: { if !$0 { ui.historyError = nil } })) {
+            Button("OK") { ui.historyError = nil }
+        } message: { Text(ui.historyError ?? "") }
     }
 }
 
