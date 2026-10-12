@@ -1,0 +1,200 @@
+import Foundation
+
+public enum BenchmarkEvent: Sendable {
+    case preparingReference
+    case preparing(String, Int, Int)
+    case measuring(String, Int, Int)
+    case result(BenchmarkResult)
+    case failure(String, String)
+}
+
+public enum BenchmarkRunner {
+    public static func run(statuses: [RuntimeStatus], configuration: BenchmarkConfiguration,
+                           overrides: [String: String] = [:],
+                           event: @escaping @Sendable (BenchmarkEvent) async -> Void = { _ in }) async throws -> BenchmarkSession {
+        try configuration.validate()
+        guard !statuses.isEmpty else { throw BenchmarkError.message("Select at least one available language.") }
+        guard statuses.allSatisfy(\.available) else { throw BenchmarkError.message("Some selected languages are not installed.") }
+        var session = BenchmarkSession(configuration: configuration)
+        await event(.preparingReference)
+        let reference = try PrimeReference.signature(count: configuration.primeCount, limit: configuration.sieveLimit)
+        let order = statuses.shuffled()
+        for (index, status) in order.enumerated() {
+            try Task.checkCancellation()
+            await event(.preparing(status.language.name, index, order.count))
+            do {
+                let result = try await benchmark(status: status, configuration: configuration, reference: reference, overrides: overrides) {
+                    await event(.measuring(status.language.name, index, order.count))
+                }
+                session.results.append(result)
+                await event(.result(result))
+            } catch is CancellationError { throw CancellationError() }
+            catch {
+                session.failures[status.language.name] = error.localizedDescription
+                await event(.failure(status.language.name, error.localizedDescription))
+            }
+        }
+        session.results.sort { $0.medianNS < $1.medianNS }
+        session.completed = true
+        return session
+    }
+
+    private static func benchmark(status: RuntimeStatus, configuration: BenchmarkConfiguration,
+                                  reference: PrimeSignature, overrides: [String: String], measuring: @escaping () async -> Void) async throws -> BenchmarkResult {
+        let language = status.language
+        guard let tool = status.executable else { throw BenchmarkError.message("\(language.name) is not installed.") }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("PrimeSieve-\(language.id)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let workers = language.sourceURL.deletingLastPathComponent()
+        var sourceNames = WorkerSources.names(for: language)
+        for name in sourceNames {
+            try FileManager.default.copyItem(at: workers.appendingPathComponent(name), to: directory.appendingPathComponent(name))
+        }
+        var toolchain = try WorkerToolchain.resolve(language: language, primary: tool, overrides: overrides)
+        try toolchain.bindHelpers(in: directory)
+        let helpers = try await toolchain.records()
+        let compileStart = DispatchTime.now().uptimeNanoseconds
+        let prepared = try await prepare(language: language, tool: tool, directory: directory,
+            timeout: max(configuration.timeoutSeconds, 120), toolchain: toolchain)
+        let compilation = prepared.compiled ? Double(DispatchTime.now().uptimeNanoseconds - compileStart) / 1e9 : 0
+        sourceNames += prepared.generatedSources
+        let hash = try WorkerSources.hash(names: sourceNames, directory: directory)
+        await measuring()
+        let base = [String(configuration.primeCount), String(configuration.sieveLimit)]
+        var samples: [Double] = []
+        if configuration.mode == .calculation {
+            let output = try await ProcessExecutor.run(executable: prepared.executable,
+                arguments: prepared.arguments + base + [String(configuration.warmups), String(configuration.repetitions)],
+                directory: directory, timeout: configuration.timeoutSeconds, environment: toolchain.environment)
+            let decoded = try decode(output.stdout, expectedSamples: configuration.repetitions, reference: reference)
+            samples = decoded.map(\.elapsedNS)
+        } else {
+            for _ in 0..<configuration.repetitions {
+                let output = try await ProcessExecutor.run(executable: prepared.executable,
+                    arguments: prepared.arguments + base + ["0", "1"], directory: directory, timeout: configuration.timeoutSeconds, environment: toolchain.environment)
+                _ = try decode(output.stdout, expectedSamples: 1, reference: reference)
+                samples.append(output.elapsedNS)
+            }
+        }
+        return .init(id: language.id, language: language.name, runtimeVersion: status.version,
+            executablePath: tool.path, samplesNS: samples, compilationSeconds: compilation,
+            signature: reference, command: prepared.buildDescription, sourceHash: hash, helperTools: helpers,
+            launchCommand: [prepared.executable.path] + prepared.arguments, sourceFiles: sourceNames.sorted(), sourceHashFormat: 2)
+    }
+
+    public static func decode(_ output: String, expectedSamples: Int, reference: PrimeSignature) throws -> [WorkerSample] {
+        var samples: [WorkerSample] = []
+        for line in output.split(separator: "\n") {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.hasPrefix("{") else { continue }
+            let sample: WorkerSample
+            do { sample = try JSONDecoder().decode(WorkerSample.self, from: Data(trimmed.utf8)) }
+            catch { throw BenchmarkError.message("Worker returned malformed timing data: \(trimmed.prefix(180))") }
+            guard sample.elapsedNS.isFinite, sample.elapsedNS >= 0, sample.signature == reference else {
+                throw BenchmarkError.message("Correctness verification failed. This result was excluded from the leaderboard.")
+            }
+            samples.append(sample)
+        }
+        guard samples.count == expectedSamples else {
+            throw BenchmarkError.message("Expected \(expectedSamples) measurements; received \(samples.count).")
+        }
+        return samples
+    }
+
+    private struct Prepared {
+        var executable: URL
+        var arguments: [String] = []
+        var compiled = false
+        var buildDescription: [String] = []
+        var generatedSources: [String] = []
+    }
+
+    private static func prepare(language: Language, tool: URL, directory: URL, timeout: Double, toolchain: WorkerToolchain) async throws -> Prepared {
+        let binary = directory.appendingPathComponent("worker")
+        let source = language.source
+        func compile(_ args: [String], executable: URL? = nil) async throws {
+            _ = try await ProcessExecutor.run(executable: executable ?? tool, arguments: args, directory: directory, timeout: timeout, environment: toolchain.environment)
+        }
+        func native(_ args: [String]) async throws -> Prepared {
+            try await compile(args)
+            return .init(executable: binary, compiled: true, buildDescription: [tool.path] + args)
+        }
+        switch language.id {
+        case "c": return try await native(["-O3", "-std=c11", source, "-o", binary.path])
+        case "cpp": return try await native(["-O3", "-std=c++17", source, "-o", binary.path])
+        case "assembly": return try await native(["-O3", source, "sieve_\(BenchmarkSession.architecture).s", "-o", binary.path])
+        case "swift": return try await native(["-O", source, "-o", binary.path])
+        case "rust": return try await native(["-C", "opt-level=3", source, "-o", binary.path])
+        case "go": return try await native(["build", "-o", binary.path, source])
+        case "zig": return try await native(["build-exe", source, "-O", "ReleaseFast", "-lc", "-femit-bin=\(binary.path)"])
+        case "d": return try await native(["-O3", "-release", source, "-of=\(binary.path)"])
+        case "fortran": return try await native(["-O3", source, "-o", binary.path])
+        case "nim": return try await native(["c", "-d:release", "--out:\(binary.path)", source])
+        case "haskell": return try await native(["-O2", source, "-o", binary.path])
+        case "ocaml": return try await native(["-O3", "clock_stubs.c", source, "-o", binary.path])
+        case "crystal": return try await native(["build", "--release", source, "-o", binary.path])
+        case "pascal": return try await native(["-O3", "-o\(binary.path)", source])
+        case "csharp", "fsharp":
+            let version = try await ProcessExecutor.run(executable: tool, arguments: ["--version"], timeout: 15)
+            guard let major = Int(version.stdout.trimmingCharacters(in: .whitespacesAndNewlines).split(separator: ".").first ?? ""), major >= 6 else {
+                throw BenchmarkError.message("A .NET SDK version 6 or newer is required.")
+            }
+            let extensionName = language.id == "csharp" ? "csproj" : "fsproj"
+            let project = """
+            <Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><TargetFramework>net\(major).0</TargetFramework><EnableDefaultCompileItems>false</EnableDefaultCompileItems><InvariantGlobalization>true</InvariantGlobalization></PropertyGroup><ItemGroup><Compile Include="\(source)" /></ItemGroup></Project>
+            """
+            try project.write(to: directory.appendingPathComponent("Worker.\(extensionName)"), atomically: true, encoding: .utf8)
+            let args = try DotNetBuild.arguments(major: major, project: "Worker.\(extensionName)")
+            try await compile(args)
+            return .init(executable: tool, arguments: [directory.appendingPathComponent("out/Worker.dll").path], compiled: true, buildDescription: [tool.path] + args, generatedSources: ["Worker.\(extensionName)"])
+        case "java":
+            let args = [source, "-d", directory.path]; try await compile(args)
+            let java = try toolchain.executable(for: "java")
+            return .init(executable: java, arguments: ["-cp", directory.path, "Sieve"], compiled: true, buildDescription: [tool.path] + args)
+        case "kotlin":
+            let args = [source, "-include-runtime", "-d", "worker.jar"]; try await compile(args)
+            return .init(executable: try toolchain.executable(for: "java"), arguments: ["-jar", "worker.jar"], compiled: true, buildDescription: [tool.path] + args)
+        case "scala":
+            let args = ["--power", "package", source, "--assembly", "--server=false", "--java-home", toolchain.environment["JAVA_HOME"]!, "-o", "worker.jar"]
+            try await compile(args)
+            return .init(executable: try toolchain.executable(for: "java"), arguments: ["-jar", "worker.jar"], compiled: true, buildDescription: [tool.path] + args)
+        case "groovy":
+            // Compile before launching the JVM, keeping compilation outside startup timing.
+            let groovyc = tool.deletingLastPathComponent().appendingPathComponent("groovyc")
+            let args = ["-d", directory.path, source]
+            try await compile(args, executable: groovyc)
+            let resolved = tool.resolvingSymlinksInPath().deletingLastPathComponent().deletingLastPathComponent()
+            let libraryDirectory = [resolved.appendingPathComponent("lib"), resolved.appendingPathComponent("libexec/lib")].first { candidate in
+                let files = (try? FileManager.default.contentsOfDirectory(atPath: candidate.path)) ?? []
+                return files.contains { $0.hasPrefix("groovy-") && $0.hasSuffix(".jar") }
+            }
+            guard let libraryDirectory else { throw BenchmarkError.message("Could not locate the Groovy runtime JARs next to the selected compiler.") }
+            let libraries = libraryDirectory.appendingPathComponent("*").path
+            return .init(executable: try toolchain.executable(for: "java"), arguments: ["-cp", "\(directory.path):\(libraries)", "Sieve"], compiled: true, buildDescription: [groovyc.path] + args)
+        case "typescript":
+            let args = [source, "--target", "ES2020", "--module", "commonjs", "--outDir", "out"]
+            // Both native tsc and JavaScript-based tsc are supported; wrappers inherit the Node alias.
+            let node = try toolchain.executable(for: "node")
+            try await compile(args)
+            return .init(executable: node, arguments: ["out/sieve.js"], compiled: true, buildDescription: [tool.path] + args)
+        case "lua", "r", "lisp":
+            let clang = try toolchain.executable(for: "clock compiler")
+            var args = ["-O2", "-dynamiclib", "clock.c", "-o", "clock.dylib"]
+            if language.id == "lua" { args += ["-DLUA_CLOCK", "-undefined", "dynamic_lookup"] }
+            try await compile(args, executable: clang)
+            let launch = language.id == "lisp" ? ["--script", source] : [source]
+            return .init(executable: tool, arguments: launch, compiled: true, buildDescription: [clang.path] + args)
+        case "clojure": return .init(executable: tool, arguments: ["-M", source], buildDescription: [tool.path, "-M", source])
+        case "python": return .init(executable: tool, arguments: ["-B", source], buildDescription: [tool.path, "-B", source])
+        case "scheme":
+            // Use the selected Guile for both compilation and execution; neither mode times compilation.
+            let args = ["--no-auto-compile", "-c", "(compile-file \"sieve.scm\" #:output-file \"worker.go\")"]
+            try await compile(args)
+            return .init(executable: tool, arguments: ["--no-auto-compile", "-c", "(load-compiled \"worker.go\")"],
+                         compiled: true, buildDescription: [tool.path] + args)
+        case "julia": return .init(executable: tool, arguments: ["--startup-file=no", "--threads=1", source], buildDescription: [tool.path, "--startup-file=no", "--threads=1", source])
+        default: return .init(executable: tool, arguments: [source], buildDescription: [tool.path, source])
+        }
+    }
+}

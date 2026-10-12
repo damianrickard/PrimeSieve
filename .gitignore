@@ -1,0 +1,8 @@
+.build/
+dist/
+.DS_Store
+*.xcodeproj/xcuserdata/
+
+# Machine-specific benchmark exports and logs stay local.
+/Validation/*
+!/Validation/README.md
