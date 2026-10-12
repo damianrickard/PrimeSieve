@@ -11,6 +11,7 @@ app_directory="$project_root/dist/PrimeSieve.app"
 mkdir -p "$app_directory/Contents/MacOS" "$app_directory/Contents/Resources"
 cp "$binary_directory/PrimeSieve" "$app_directory/Contents/MacOS/PrimeSieve"
 cp -R "$binary_directory/PrimeSieve_PrimeSieveCore.bundle" "$app_directory/Contents/Resources/"
+"$project_root/scripts/build-icon.sh" "$app_directory/Contents/Resources/AppIcon.icns"
 cat > "$app_directory/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -21,7 +22,8 @@ cat > "$app_directory/Contents/Info.plist" <<'PLIST'
 <key>CFBundleDisplayName</key><string>PrimeSieve</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
-<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleVersion</key><string>2</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

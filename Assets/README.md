@@ -1,0 +1,7 @@
+# App icon
+
+`AppIcon.png` is the original transparent master image, generated with the built-in `image_gen` tool. The orange number sign matches PrimeSieve's numeric focus and international-orange interface. `scripts/build-icon.sh` resizes this master into the standard macOS icon representations and packages them as `AppIcon.icns`; it preserves transparency.
+
+## Generation prompt
+
+Use case: logo-brand. Asset type: final macOS application icon for PrimeSieve, a local prime-number benchmark app. Create one polished square icon, 1024x1024, isolated with genuinely transparent pixels outside the icon silhouette. A graphite-black rounded-square macOS tile occupies about 88 percent of the canvas, centered, with generous transparent equal margins. On the tile a single very bold international-orange (#FF4F00) number sign (#): four substantial intersecting beams with a crisp open square at the center, subtly leaning forward to suggest computation speed. Elegant restrained dimensional bevels, soft upper-left illumination, extremely subtle warm reflected light on the dark tile. Strong orange silhouette, precise geometry, excellent contrast, legible at 32 pixels. Premium native desktop utility aesthetic. Straight-on orthographic view, no perspective tilt of the tile, no extraneous objects, no letters or words, no numbers, no tiny circuitry or small details, no border outside the tile, no watermark. This is the finished icon asset, not a mockup or presentation sheet. Preserve transparency outside the rounded-square tile and its subtle shadow.

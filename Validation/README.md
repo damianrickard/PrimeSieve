@@ -4,6 +4,13 @@ Validated on Damian's Apple Silicon Mac on October 11, 2026.
 
 This summary is published with the source. The named raw logs and benchmark exports are retained locally and excluded from Git because they contain machine names and local paths. To reproduce the checks, follow the build and test instructions in the project README and set `PRIMESIEVE_REQUIRE_ALL=1` to require all 35 languages.
 
+## App icon and build 2
+
+- `icon-build.log`: release packaging succeeded with the new graphite-and-orange icon. All ten standard macOS icon representations were unpacked and checked for correct dimensions and transparency; the 32- and 128-pixel images were visually inspected.
+- `CFBundleIconFile` resolves to the packaged `AppIcon.icns`; the installed About window visibly shows the icon and version 0.1.0 (2).
+- `/Applications/PrimeSieve.app` matches the release bundle in file contents and permissions and passes strict code-signature verification. The previous installed build was retained in an ignored local `dist/previous-build-1-*` folder.
+- This update changes artwork and packaging only; worker algorithms and application behavior are unchanged.
+
 ## Clear History option
 
 - `history-tests.log`: six focused tests passed. Temporary histories cover deleting saved and corrupt JSON, repeated clearing, saving afterward, preserving exported files and nested folders, removing symlinks without deleting their targets, failure reporting, and blocking deletion during a run. App-model checks confirm the visible result is retained.

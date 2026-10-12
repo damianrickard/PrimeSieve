@@ -78,5 +78,6 @@ Source hashes use a versioned, length-prefixed manifest of file names and conten
 - `Tests/PrimeSieveCoreTests`: correctness, protocol, process timeout/cancellation, toolchain resolution, provenance and integration checks.
 - `Tests/PrimeSieveAppTests`: runtime-refresh race regression coverage.
 - `scripts/build-app.sh`: reproducible macOS application packaging.
+- `Assets/AppIcon.png`: graphite and international-orange app icon; the build generates all macOS icon sizes with `scripts/build-icon.sh`.
 
 Apple Silicon is the initial validation platform. An Intel assembly kernel is included; Intel execution requires separate hardware validation.
