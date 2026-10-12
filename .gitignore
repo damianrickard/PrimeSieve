@@ -6,3 +6,8 @@ dist/
 # Machine-specific benchmark exports and logs stay local.
 /Validation/*
 !/Validation/README.md
+
+# Windows/.NET build output
+**/bin/
+**/obj/
+Windows/artifacts/

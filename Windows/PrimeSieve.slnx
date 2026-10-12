@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="PrimeSieve.Core/PrimeSieve.Core.csproj" />
+  <Project Path="PrimeSieve.App/PrimeSieve.App.csproj" />
+  <Project Path="PrimeSieve.Cli/PrimeSieve.Cli.csproj" />
+  <Project Path="PrimeSieve.Tests/PrimeSieve.Tests.csproj" />
+  <Project Path="PrimeSieve.UiTests/PrimeSieve.UiTests.csproj" />
+</Solution>

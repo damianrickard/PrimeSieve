@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <AssemblyName>PrimeSieve</AssemblyName>
+    <ApplicationIcon>AppIcon.ico</ApplicationIcon>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../PrimeSieve.Core/PrimeSieve.Core.csproj" /></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="PrimeSieve.UiTests" /></ItemGroup>
+</Project>

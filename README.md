@@ -4,6 +4,10 @@ A native macOS application written in SwiftUI that compares the time taken to ca
 
 Download the **Developer ID signed and Apple-notarized** Apple Silicon app from [GitHub Releases](https://github.com/damianrickard/PrimeSieve/releases/latest). Extract the ZIP and drag PrimeSieve into Applications. macOS may still show its normal first-open confirmation for an internet download.
 
+## Windows version
+
+A native C# / WPF version is available in [`Windows`](Windows/README.md), with local benchmarks, runtime setup, history, exports and the 35-language code explorer. Build with the .NET 10 SDK. See the Windows guide for packaging, toolchain requirements and the Windows validation scope.
+
 ## Build and launch
 
 ```sh
